@@ -1,6 +1,11 @@
 # app/models.py
 from pydantic import BaseModel, Field
 from typing import Optional, Dict
+from enum import Enum
+
+class TenantRegion(str, Enum):
+    EU = "eu"
+    US = "us"
 
 class AuthorizeRequest(BaseModel):
     actor_id: str = Field(..., description="ID del agente o usuario que ejecuta")

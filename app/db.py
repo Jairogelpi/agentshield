@@ -1,6 +1,7 @@
 import os
 from supabase import create_client, Client
 import redis
+import asyncio
 
 # Configuración
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -29,27 +30,40 @@ async def get_current_spend(tenant_id: str, cost_center: str):
 # app/db.py
 
 async def increment_spend(tenant_id: str, cost_center: str, amount: float):
+    """
+    Actualiza el gasto usando Write-Behind Caching.
+    Prioriza la velocidad en Redis y delega la DB a un proceso asíncrono.
+    """
+    key = f"spend:{tenant_id}:{cost_center}"
+    
     try:
-        # 1. Llamada RPC a Supabase (Source of Truth)
-        # Esto garantiza atomicidad en la base de datos.
+        # 1. ACTUALIZACIÓN INSTANTÁNEA (Redis)
+        # Usamos incrbyfloat para que el límite de presupuesto se aplique al milisegundo
+        new_redis_total = redis_client.incrbyfloat(key, amount)
+        
+        # 2. PERSISTENCIA ASÍNCRONA (Fire and Forget)
+        # No usamos 'await' aquí para la DB, lo lanzamos como una tarea de fondo
+        asyncio.create_task(persist_spend_to_db(tenant_id, cost_center, amount))
+        
+        return new_redis_total
+
+    except Exception as e:
+        print(f"❌ Error updating Redis spend: {e}")
+        # Si falla Redis, intentamos al menos registrar en DB de forma síncrona como fallback
+        return await persist_spend_to_db(tenant_id, cost_center, amount)
+
+async def persist_spend_to_db(tenant_id: str, cost_center: str, amount: float):
+    """
+    Tarea de fondo para persistir el gasto en Supabase.
+    """
+    try:
         response = supabase.rpc("increment_spend", {
             "p_tenant_id": tenant_id,
             "p_cc_id": cost_center,
             "p_amount": amount
         }).execute()
-        
-        # Obtenemos el nuevo total confirmado por la DB
-        new_total_spend = response.data 
-
-        # 2. Actualizamos Redis con el valor REAL de la DB
-        # No hacemos "incrby" aquí para evitar desvío (drift) entre DB y Cache.
-        # Simplemente imponemos la verdad de la DB en el caché.
-        key = f"spend:{tenant_id}:{cost_center}"
-        redis_client.set(key, new_total_spend)
-        
-        return new_total_spend
-
+        return response.data
     except Exception as e:
-        # En producción, aquí va un log crítico a Sentry/Datadog
-        print(f"CRITICAL ERROR updating spend: {e}")
-        raise e
+        # Log crítico si la DB falla, para reintentar o auditar después
+        print(f"CRITICAL: DB Persistence failed for {tenant_id}: {e}")
+        return None

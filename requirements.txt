@@ -17,3 +17,7 @@ opentelemetry-exporter-otlp
 opentelemetry-instrumentation-fastapi
 logtail-python
 sentry_sdk
+sentence-transformers
+redis
+numpy
+rapidfuzz

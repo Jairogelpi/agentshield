@@ -8,6 +8,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from supabase import create_client
+import redis
 
 # Configuración
 # Asegúrate de cargar las variables de entorno antes de ejecutar este script
@@ -26,6 +27,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     exit(1)
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+redis_client = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"), decode_responses=True)
 
 def fetch_latest_prices():
     """
@@ -80,7 +82,14 @@ def fetch_latest_prices():
             # Lo hacemos por lotes de 100 si es necesario, pero OpenRouter tiene ~100-200 modelos.
             # Intento directo:
             data = supabase.table("model_prices").upsert(updates, on_conflict="provider, model").execute()
-            print(f"✅ Precios actualizados exitosamente.")
+            
+            # Limpieza selectiva de los precios cacheados en Redis
+            # Esto fuerza al estimator.py a leer los nuevos valores de la DB
+            keys = redis_client.keys("price:*")
+            if keys:
+                redis_client.delete(*keys)
+                
+            print(f"✅ Precios actualizados y caché invalidado.")
             
     except Exception as e:
         print(f"❌ Error actualizando precios: {e}")

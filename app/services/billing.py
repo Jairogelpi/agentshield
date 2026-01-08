@@ -5,7 +5,15 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-async def record_transaction(tenant_id: str, cost_center_id: str, cost_real: float, metadata: dict, auth_id: str = None):
+async def record_transaction(
+    tenant_id: str, 
+    cost_center_id: str, 
+    cost_real: float, 
+    metadata: dict, 
+    auth_id: str = None,
+    cache_hit: bool = False,
+    tokens_saved: int = 0
+):
     """
     Registra el gasto de una transacción (saving receipt + updating counters).
     Usado tanto por el endpoint /receipt (SDK) como por el Proxy (Server-side).
@@ -17,6 +25,8 @@ async def record_transaction(tenant_id: str, cost_center_id: str, cost_real: flo
     # 2. Guardar Receipt
     try:
         trace_id = metadata.get("trace_id")
+        region = metadata.get("processed_in", "eu")
+        
         supabase.table("receipts").insert({
             "tenant_id": tenant_id,
             "cost_center_id": cost_center_id,
@@ -24,14 +34,18 @@ async def record_transaction(tenant_id: str, cost_center_id: str, cost_real: flo
             "signature": rx_signature,
             "usage_data": metadata,
             "authorization_id": auth_id,
-            "trace_id": trace_id
+            "trace_id": trace_id,
+            "processed_in": region,
+            "cache_hit": cache_hit,
+            "tokens_saved": tokens_saved 
         }).execute()
     except Exception as e:
         logger.error(f"Error saving receipt for tenant {tenant_id}: {e}")
         # Intentamos seguir para cobrar al menos en Redis
         pass
         
-    # 3. Actualizar Contadores (Redis + DB)
-    await increment_spend(tenant_id, cost_center_id, cost_real)
+    # 3. Actualizar Contadores (Redis + DB) (Solo si hay coste real)
+    if not cache_hit and cost_real > 0:
+        await increment_spend(tenant_id, cost_center_id, cost_real)
     
     return rx_signature

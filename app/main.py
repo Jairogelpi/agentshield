@@ -6,7 +6,10 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.limiter import limiter
 
+from slowapi.errors import RateLimitExceeded
 from app.limiter import limiter
+from app.services.cache import init_semantic_cache_index
+
 import os
 import logging
 from opentelemetry import trace
@@ -69,6 +72,9 @@ app = FastAPI(title="AgentShield API", version="1.0.0")
 
 # Setup Observability (OTEL + Grafana)
 setup_observability(app)
+
+# Inicializar Cache Vectorial
+init_cache_index()
 
 # 1. Configuración CORS (Production Ready)
 # Leemos de variable de entorno. Ejemplo: "https://app.agentshield.io,https://admin.agentshield.io"
