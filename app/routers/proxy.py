@@ -1,29 +1,44 @@
 import os
 import json
-from fastapi import APIRouter, Request, Header, HTTPException
+from fastapi import APIRouter, Request, Header, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse, JSONResponse
 from litellm import acompletion 
 from app.routers.authorize import get_tenant_from_header
+from app.services.billing import record_transaction
 from app.estimator import estimator
 from app.db import redis_client
 import re
 from app.logic import create_aut_token
 
 # --- SEMANTIC FIREWALL HELPERS ---
-def detect_injection(messages: list) -> bool:
+# --- SEMANTIC FIREWALL HELPERS ---
+async def detect_risk_with_llama_guard(messages: list) -> bool:
     """
-    Heurística simple para detectar Prompt Injection.
-    En producción, esto llamaría a un modelo 'Guard' (ej: Llama-Guard, Lakera).
+    Usa Llama-Guard (via Groq/Litellm) para analizar si el prompt es seguro.
     """
-    # Patrones sospechosos básicos (MVP)
-    forbidden_patterns = ["ignore all previous instructions", "system override", "pwned"]
-    
-    combined_text = " ".join([m.get("content", "").lower() for m in messages])
-    
-    for pat in forbidden_patterns:
-        if pat in combined_text:
+    try:
+        # Formateamos la consulta para Llama-Guard
+        # Nota: Llama-Guard espera formato específico, pero LiteLLM suele adaptar 'messages' estándar.
+        response = await acompletion(
+            model="groq/llama-guard-3-8b", 
+            messages=messages,
+            # temperature=0.0 # Strict
+        )
+        
+        verdict = response.choices[0].message.content.lower()
+        if "unsafe" in verdict:
+            print(f"🔥 Llama-Guard Alert: {verdict}")
             return True
-    return False
+            
+        return False
+        
+    except Exception as e:
+        # Fail-Open or Fail-Closed? 
+        # Para MVP Fail-Open (loguear error pero dejar pasar) para no bloquear tráfico legítimo por error de Groq.
+        # En producción High-Security: Fail-Closed (return True).
+        print(f"⚠️ Firewall Error (Llama-Guard): {e}")
+        return False
+
 
 def redact_pii(messages: list) -> list:
     """
@@ -52,12 +67,15 @@ router = APIRouter(tags=["Universal Proxy"])
 @router.post("/v1/chat/completions")
 async def universal_proxy(
     request: Request,
+    background_tasks: BackgroundTasks,
     authorization: str = Header(...)
 ):
     # 1. AUTENTICACIÓN AGENTSHIELD (Tu seguridad)
     try:
         as_key = authorization.replace("Bearer ", "").strip()
         tenant_id = await get_tenant_from_header(x_api_key=as_key)
+        # 1.1 Obtener Cost Center por defecto (Para facturación)
+        cost_center_id = await get_proxy_cost_center(tenant_id)
     except Exception:
          raise HTTPException(status_code=401, detail="Invalid AgentShield API Key")
 
@@ -69,10 +87,15 @@ async def universal_proxy(
 
     # --- SEMANTIC FIREWALL (AGENT OPS) ---
     
-    # A. Check Prompt Injection
-    if detect_injection(messages):
+    # --- SEMANTIC FIREWALL (AGENT OPS) ---
+    
+    # A. Check Prompt Injection (AI Powered)
+    is_unsafe = await detect_risk_with_llama_guard(messages)
+    
+    if is_unsafe:
         # Bloquear inmediatamente. No gastar tokens.
-        raise HTTPException(status_code=403, detail="Security Alert: Potential Prompt Injection Detected.")
+        # TODO: Registrar incidente en DB (auditoría de seguridad)
+        raise HTTPException(status_code=403, detail="Security Alert: Request blocked by AgentShield AI Safety Layer.")
 
     # B. PII Redaction (Sanitization)
     # Modificamos los mensajes al vuelo para proteger datos sensibles
@@ -99,21 +122,44 @@ async def universal_proxy(
         if stream:
             # CASO STREAMING: Generador asíncrono que traduce chunks al vuelo
             async def stream_generator():
-                # Llamada universal
-                response = await acompletion(
-                    model=model, 
-                    messages=messages,
-                    stream=True,
-                    **extra_body
-                    # Nota: LiteLLM leerá las KEYS de las vars de entorno globales de este proceso/contenedor.
-                )
+                stream_cost = 0.0
+                full_content = ""
                 
-                async for chunk in response:
-                    # LiteLLM ya devuelve el chunk en formato estándar OpenAI
-                    # Solo tenemos que serializarlo a string para SSE
-                    yield f"data: {json.dumps(chunk.json())}\n\n"
-                
-                yield "data: [DONE]\n\n"
+                try:
+                    # Llamada universal
+                    response = await acompletion(
+                        model=model, 
+                        messages=messages,
+                        stream=True,
+                        **extra_body
+                    )
+                    
+                    async for chunk in response:
+                        # Intentar extraer coste si LiteLLM lo provee
+                        # (Depende del proveedor y versión)
+                        if hasattr(chunk, "_hidden_params"):
+                            stream_cost = max(stream_cost, chunk._hidden_params.get("response_cost", 0.0))
+                            
+                        # Acumular para fallback de estimación
+                        delta = chunk.choices[0].delta.content or ""
+                        full_content += delta
+                        
+                        yield f"data: {json.dumps(chunk.json())}\n\n"
+                    
+                    yield "data: [DONE]\n\n"
+                    
+                finally:
+                    # BLOCKING BUT NECESSARY: Guardar recibo al finalizar stream
+                    # Si stream_cost es 0 (no soportado por proveedor), estimamos
+                    final_cost = stream_cost
+                    if final_cost <= 0:
+                        # Fallback Estimación
+                        # est_input ya lo tenemos. Output es len(full_content)
+                         final_cost = estimator.estimate_cost(model, "COMPLETION", input_unit_count=est_input + (len(full_content)//4))
+                    
+                    # Fire & Forget en background (usando asyncio.create_task si no tenemos context manager, 
+                    # pero aquí estamos en generador. Llamar a helper directo)
+                    await record_transaction(tenant_id, cost_center_id, final_cost, {"model": model, "mode": "stream"})
 
             return StreamingResponse(stream_generator(), media_type="text/event-stream")
 
@@ -127,7 +173,16 @@ async def universal_proxy(
             )
             
             # LiteLLM nos da el coste real calculado por ellos (útil para auditoría)
-            # cost_usd = response._hidden_params.get("response_cost", 0.0) 
+            cost_usd = response._hidden_params.get("response_cost", 0.0)
+            
+            # FACTURACIÓN AUTOMÁTICA (Background)
+            background_tasks.add_task(
+                record_transaction, 
+                tenant_id, 
+                cost_center_id, 
+                cost_usd, 
+                {"model": model, "mode": "proxy"}
+            )
             
             # IMPORTANTE: LiteLLM devuelve un objeto ModelResponse, hay que convertirlo a dict/json
             return JSONResponse(content=json.loads(response.json()))

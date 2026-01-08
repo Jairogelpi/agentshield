@@ -9,6 +9,7 @@ router = APIRouter(tags=["Onboarding"])
 class SignupRequest(BaseModel):
     company_name: str
     email: str # Opcional, para contacto
+    owner_id: str # UUID de Supabase Auth (Usuario Humano)
 
 @router.post("/v1/signup")
 async def signup_tenant(req: SignupRequest):
@@ -22,7 +23,8 @@ async def signup_tenant(req: SignupRequest):
             "name": req.company_name,
             "api_key_hash": key_hash,
             "is_active": True,
-            "default_markup": 1.20 # Default margen
+            "default_markup": 1.20, # Default margen
+            "owner_id": req.owner_id
         }).execute()
         
         new_tenant = res.data[0]
