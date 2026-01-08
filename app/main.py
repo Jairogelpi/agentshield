@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from app.routers import authorize, receipt, dashboard, proxy, onboarding, compliance
+from app.routers import authorize, receipt, dashboard, proxy, onboarding, compliance, analytics
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from slowapi import _rate_limit_exceeded_handler
@@ -82,7 +82,7 @@ app = FastAPI(title="AgentShield API", version="1.0.0")
 setup_observability(app)
 
 # Inicializar Cache Vectorial
-init_cache_index()
+init_semantic_cache_index()
 
 # 1. Configuración CORS (Production Ready)
 # Leemos de variable de entorno. Ejemplo: "https://app.agentshield.io,https://admin.agentshield.io"
@@ -116,6 +116,7 @@ app.include_router(dashboard.router)
 app.include_router(proxy.router)
 app.include_router(onboarding.router)
 app.include_router(compliance.router)
+app.include_router(analytics.router)
 
 # Endpoint de salud para Render (ping)
 @app.get("/health")

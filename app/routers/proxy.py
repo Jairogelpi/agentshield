@@ -15,6 +15,7 @@ from app.services.cache import get_semantic_cache_full_data, set_semantic_cache
 from app.services.reranker import verify_cache_logic
 from app.services.vault import get_secret
 from app.services.pii_guard import advanced_redact_pii
+from app.services.carbon import calculate_footprint
 from opentelemetry.trace import Status, StatusCode
 
 # Helper para trazas seguras (PII Firewall para OTEL)
@@ -268,10 +269,23 @@ async def universal_proxy(
                 # Record Transaction
                 if cost_usd <= 0:
                     cost_usd = estimator.estimate_cost(model, "COMPLETION", input_unit_count=est_input + (len(final_content)//4))
+                
+                # --- OBSERVABILIDAD DE NEGOCIO (Green IT + Compliance) ---
+                total_tokens = (est_input * 4) + (len(final_content)//4) # Aprox
+                carbon_g = calculate_footprint(model, CURRENT_REGION, total_tokens)
+                
+                # INYECCIÓN OTEL (Grafana Magic)
+                span.set_attribute("carbon.emissions_g", carbon_g)
+                span.set_attribute("energy.kwh_estimated", (total_tokens/1000.0)*0.001)
+                
+                span.set_attribute("compliance.data_residency", CURRENT_REGION)
+                span.set_attribute("compliance.actor_id", tenant_id)
+                span.set_attribute("compliance.pii_scrubbed", True)
+                span.set_attribute("compliance.eu_ai_act_risk", "General Purpose") # Idealmente vendría de metadata
 
                 background_tasks.add_task(
                     record_transaction, tenant_id, cost_center_id, cost_usd, 
-                    {"model": model, "mode": "proxy", "trace_id": trace_id, "latency_ms": latency_ms, "processed_in": CURRENT_REGION}
+                    {"model": model, "mode": "proxy", "trace_id": trace_id, "latency_ms": latency_ms, "processed_in": CURRENT_REGION, "carbon_g": carbon_g}
                 )
                 return JSONResponse(content=json.loads(response.json()))
 
