@@ -6,13 +6,69 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.limiter import limiter
 
+from app.limiter import limiter
+import os
+import logging
+from opentelemetry import trace
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from logtail import LogtailHandler
+import sentry_sdk
+
+# 0. Sentry Error Tracking
+sentry_dsn = os.getenv("SENTRY_DSN")
+if sentry_dsn:
+    sentry_sdk.init(dsn=sentry_dsn, traces_sample_rate=1.0)
+
+# 1. Configuración de Logs (Betterstack)
+# Solo si existe el token, para no romper en dev local sin token
+logtail_token = os.getenv("LOGTAIL_TOKEN")
+if logtail_token:
+    handler = LogtailHandler(source_token=logtail_token)
+    logger = logging.getLogger(__name__)
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
+
+
+def setup_observability(app):
+    try:
+        # Usamos nombres standard de OTEL para Grafana
+        endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+        headers_str = os.getenv("OTEL_EXPORTER_OTLP_HEADERS")
+        
+        if endpoint:
+            # Parsear headers de "Key=Value,Key2=Value2" a dict
+            headers = dict(h.split('=') for h in headers_str.split(',')) if headers_str else {}
+            
+            # Nombre de servicio
+            service_name = os.getenv("OTEL_SERVICE_NAME", "AgentShield-Core")
+            resource = Resource.create({"service.name": service_name})
+            
+            provider = TracerProvider(resource=resource)
+            
+            # Pasar los headers de Grafana directamente
+            exporter = OTLPSpanExporter(endpoint=endpoint, headers=headers)
+            processor = BatchSpanProcessor(exporter)
+            
+            provider.add_span_processor(processor)
+            trace.set_tracer_provider(provider)
+            
+            # Instrumentar FastAPI automáticamente
+            FastAPIInstrumentor.instrument_app(app)
+            print(f"✅ Observability initialized for {service_name} -> Grafana Cloud")
+            
+    except Exception as e:
+        print(f"Grafana/OTEL Init Error: {e}")
+
 app = FastAPI(title="AgentShield API", version="1.0.0")
 
-# Rate Limiter setup
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
-import os
+# Setup Observability (OTEL + Grafana)
+setup_observability(app)
 
 # 1. Configuración CORS (Production Ready)
 # Leemos de variable de entorno. Ejemplo: "https://app.agentshield.io,https://admin.agentshield.io"
@@ -50,3 +106,4 @@ app.include_router(onboarding.router)
 @app.get("/health")
 def health_check():
     return {"status": "ok", "service": "agentshield-core"}
+

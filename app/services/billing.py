@@ -16,13 +16,15 @@ async def record_transaction(tenant_id: str, cost_center_id: str, cost_real: flo
     
     # 2. Guardar Receipt
     try:
+        trace_id = metadata.get("trace_id")
         supabase.table("receipts").insert({
             "tenant_id": tenant_id,
             "cost_center_id": cost_center_id,
             "cost_real": cost_real,
             "signature": rx_signature,
             "usage_data": metadata,
-            "authorization_id": auth_id
+            "authorization_id": auth_id,
+            "trace_id": trace_id
         }).execute()
     except Exception as e:
         logger.error(f"Error saving receipt for tenant {tenant_id}: {e}")

@@ -575,4 +575,48 @@ async def set_custom_price(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+# --- OBSERVABILITY (TRACING) ---
+
+@router.get("/traces/{trace_id}/full")
+async def get_full_trace_story(trace_id: str, tenant_id: str = Depends(get_current_tenant_id)):
+    """
+    Devuelve la 'historia' completa de una ejecución para el cliente.
+    Incluye latencia, seguridad, coste y respuesta del modelo.
+    """
+    # Buscamos todos los eventos relacionados con esa traza
+    # Nota: Asegúrate de que tu tabla 'receipts' tenga una columna 'trace_id' y metadata JSONB
+    # Si 'trace_id' está dentro de 'usage_data' (metadata), ajusta la query:
+    # .filter("usage_data->>trace_id", "eq", trace_id)
+    
+    # Asumimos que hemos guardado trace_id dentro del JSON 'usage_data' en receipt.py/billing.py
+    # O si hemos creado columna dedicada (ideal). 
+    # Para MVP, consultamos sobre el JSONB 'usage_data'
+    
+    res = supabase.table("receipts") \
+        .select("*") \
+        .eq("tenant_id", tenant_id) \
+        .ilike("usage_data::text", f"%{trace_id}%") \
+        .execute()
+        # Nota: ilike sobre text es lento, usar operador ->> en producción si es columna indexada
+    
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Trace not found")
+
+    data = res.data
+    
+    # Calcular resumen
+    # Extraer latency_ms del json usage_data
+    total_latency = sum(float(r.get('usage_data', {}).get('latency_ms', 0)) for r in data)
+    total_cost = sum(float(r.get('cost_real', 0)) for r in data)
+
+    return {
+        "summary": {
+            "trace_id": trace_id,
+            "total_latency_ms": round(total_latency, 2),
+            "total_cost": round(total_cost, 6),
+            "steps_count": len(data)
+        },
+        "timeline": data  # Esto es lo que el Front usará para el árbol
+    }
+
 

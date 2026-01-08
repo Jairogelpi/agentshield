@@ -9,6 +9,8 @@ from app.estimator import estimator
 from app.db import redis_client
 import re
 from app.logic import create_aut_token
+from opentelemetry import trace
+import time
 
 # --- SEMANTIC FIREWALL HELPERS ---
 # --- SEMANTIC FIREWALL HELPERS ---
@@ -70,6 +72,16 @@ async def universal_proxy(
     background_tasks: BackgroundTasks,
     authorization: str = Header(...)
 ):
+    # Obtener el contexto de traza actual generado por el middleware
+    current_span = trace.get_current_span()
+    if current_span and current_span.get_span_context().is_valid:
+        trace_id = format(current_span.get_span_context().trace_id, '032x')
+    else:
+        # Fallback si no hay OTEL activo
+        trace_id = "no-trace"
+    
+    start_time = time.time()
+
     # 1. AUTENTICACIÓN AGENTSHIELD (Tu seguridad)
     try:
         as_key = authorization.replace("Bearer ", "").strip()
@@ -159,7 +171,20 @@ async def universal_proxy(
                     
                     # Fire & Forget en background (usando asyncio.create_task si no tenemos context manager, 
                     # pero aquí estamos en generador. Llamar a helper directo)
-                    await record_transaction(tenant_id, cost_center_id, final_cost, {"model": model, "mode": "stream"})
+                    latency_ms = (time.time() - start_time) * 1000
+                    await record_transaction(
+                        tenant_id, 
+                        cost_center_id, 
+                        final_cost, 
+                        {
+                            "model": model, 
+                            "mode": "stream",
+                            "trace_id": trace_id,
+                            "latency_ms": latency_ms,
+                            "provider": "grafana-cloud",
+                            "status": "success"
+                        }
+                    )
 
             return StreamingResponse(stream_generator(), media_type="text/event-stream")
 
@@ -175,13 +200,24 @@ async def universal_proxy(
             # LiteLLM nos da el coste real calculado por ellos (útil para auditoría)
             cost_usd = response._hidden_params.get("response_cost", 0.0)
             
+            cost_usd = response._hidden_params.get("response_cost", 0.0)
+            
+            latency_ms = (time.time() - start_time) * 1000
+
             # FACTURACIÓN AUTOMÁTICA (Background)
             background_tasks.add_task(
                 record_transaction, 
                 tenant_id, 
                 cost_center_id, 
                 cost_usd, 
-                {"model": model, "mode": "proxy"}
+                {
+                    "model": model, 
+                    "mode": "proxy",
+                    "trace_id": trace_id,
+                    "latency_ms": latency_ms,
+                    "provider": "grafana-cloud",
+                    "status": "success"
+                }
             )
             
             # IMPORTANTE: LiteLLM devuelve un objeto ModelResponse, hay que convertirlo a dict/json
