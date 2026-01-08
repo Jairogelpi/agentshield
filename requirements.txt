@@ -1,7 +1,13 @@
 fastapi
 uvicorn[standard]
+gunicorn
 pydantic
 supabase
+requests
 redis
 python-jose[cryptography]  # Para firmar tokens
 python-dotenv
+httpx
+numpy
+litellm
+slowapi
