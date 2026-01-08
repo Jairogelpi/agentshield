@@ -1,3 +1,4 @@
+from fastapi import FastAPI
 from app.routers import authorize, receipt, dashboard, proxy, onboarding
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
