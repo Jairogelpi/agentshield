@@ -14,7 +14,7 @@ def create_aut_token(data: dict):
     to_encode = data.copy()
     # Expire en 10 minutos (tiempo suficiente para ejecutar el prompt y volver)
     expire = time.time() + 600 
-    to_encode.update({"exp": expire, "iss": "spendshield-core"})
+    to_encode.update({"exp": expire, "iss": "agentshield-core"})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 def sign_receipt(receipt_data: dict):
