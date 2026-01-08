@@ -208,7 +208,6 @@ async def get_profitability_report(
             "gross_margin_percent": round(margin_percent, 2)
         },
         "breakdown_by_project": breakdown
-        "breakdown_by_project": breakdown
     }
 
 @router.get("/analytics/history")
