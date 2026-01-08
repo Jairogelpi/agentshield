@@ -14,8 +14,13 @@ from app.logic import create_aut_token, verify_residency
 from app.services.cache import get_semantic_cache_full_data, set_semantic_cache
 from app.services.reranker import verify_cache_logic
 from app.services.vault import get_secret
+from app.services.pii_guard import advanced_redact_pii
 from opentelemetry import trace
+import logging
 import time
+
+logger = logging.getLogger("agentshield.security")
+tracer = trace.get_tracer(__name__)
 import os
 
 # Leemos la región del servidor desde las variables de entorno de Render
@@ -25,32 +30,32 @@ CURRENT_REGION = os.getenv("SERVER_REGION", "eu")
 # --- SEMANTIC FIREWALL HELPERS ---
 async def detect_risk_with_llama_guard(messages: list) -> bool:
     """
-    Usa Llama-Guard (via Groq/Litellm) para analizar si el prompt es seguro.
+    Llama-Guard 3 Firewall con política Fail-Closed.
     """
-    try:
-        # Formateamos la consulta para Llama-Guard
-        # Nota: Llama-Guard espera formato específico, pero LiteLLM suele adaptar 'messages' estándar.
-        response = await acompletion(
-            model="groq/llama-guard-3-8b", 
-            messages=messages,
-            # temperature=0.0 # Strict
-        )
-        
-        verdict = response.choices[0].message.content.lower()
-        if "unsafe" in verdict:
-            print(f"🔥 Llama-Guard Alert: {verdict}")
-            return True
+    with tracer.start_as_current_span("security_guard_check") as span:
+        try:
+            # Formateamos la consulta para Llama-Guard
+            response = await acompletion(
+                model="groq/llama-guard-3-8b", 
+                messages=messages,
+                temperature=0.0 
+            )
             
-        return False
-        
-        return False
-        
-    except Exception as e:
-        # Fail-Open or Fail-Closed? 
-        # Para MVP Fail-Open (loguear error pero dejar pasar) para no bloquear tráfico legítimo por error de Groq.
-        # En producción High-Security: Fail-Closed (return True).
-        print(f"⚠️ Firewall Error (Llama-Guard): {e}")
-        return False
+            verdict = response.choices[0].message.content.lower()
+            span.set_attribute("security.verdict", verdict)
+
+            if "unsafe" in verdict:
+                logger.error(f"🔥 Security Threat Blocked: {verdict}")
+                return True # UNSAFE
+                
+            return False # SAFE
+            
+        except Exception as e:
+            # 2026 Standard: Fail-Closed. 
+            # Si el servicio de seguridad no responde, NO se procesa la petición.
+            span.record_exception(e)
+            logger.critical(f"🚨 Safety Layer Failure (Fail-Closed triggered): {e}")
+            return True # Asumimos riesgo si no podemos verificar
 
 async def final_security_audit(guard_task: asyncio.Task, trace_id: str):
     """Auditoría en segundo plano si Llama-Guard tardó demasiado"""
@@ -63,24 +68,7 @@ async def final_security_audit(guard_task: asyncio.Task, trace_id: str):
         print(f"Background Guard Error: {e}")
 
 
-def redact_pii(messages: list) -> list:
-    """
-    Redacta emails y tarjetas de crédito simples.
-    """
-    email_regex = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
-    # CC simple (Luhn check sería mejor)
-    cc_regex = r"\b(?:\d[ -]*?){13,16}\b" 
 
-    new_messages = []
-    for m in messages:
-        content = m.get("content", "")
-        # Redactar
-        content = re.sub(email_regex, "[EMAIL_REDACTED]", content)
-        content = re.sub(cc_regex, "[CC_REDACTED]", content)
-        
-        new_messages.append({**m, "content": content})
-        
-    return new_messages
 
 router = APIRouter(tags=["Universal Proxy"])
 
@@ -93,167 +81,170 @@ async def universal_proxy(
     background_tasks: BackgroundTasks,
     authorization: str = Header(...)
 ):
-    # Obtener el contexto de traza actual generado por el middleware
-    current_span = trace.get_current_span()
-    if current_span and current_span.get_span_context().is_valid:
-        trace_id = format(current_span.get_span_context().trace_id, '032x')
-    else:
-        # Fallback si no hay OTEL activo
-        trace_id = "no-trace"
-    
-    start_time = time.time()
+    with tracer.start_as_current_span("universal_proxy_flow") as span:
+        # Obtener el contexto de traza actual generado por el middleware (propagado auto por otel, pero forzamos id)
+        trace_id = format(span.get_span_context().trace_id, '032x')
+        start_time = time.time()
 
-    # 1. AUTENTICACIÓN AGENTSHIELD (Tu seguridad)
-    try:
-        as_key = authorization.replace("Bearer ", "").strip()
-        tenant_id = await get_tenant_from_header(x_api_key=as_key)
-        # 1.1 Obtener Cost Center por defecto (Para facturación)
-        cost_center_id = await get_proxy_cost_center(tenant_id)
-    except Exception:
-         raise HTTPException(status_code=401, detail="Invalid AgentShield API Key")
-
-    # 2. LEER PETICIÓN (Agnóstica)
-    body = await request.json()
-    model = body.get("model") # El usuario pide "claude-3-opus", "gemini-pro", "ollama/llama3"
-    messages = body.get("messages", [])
-    stream = body.get("stream", False)
-
-    # --- SEMANTIC CACHE CHECK (ZERO COST) ---
-    if messages:
-        user_prompt = messages[-1].get("content", "")
-        
-        # 1. Búsqueda Vectorial (Filtro 1)
-        cache_data = await get_semantic_cache_full_data(user_prompt)
-        
-        if cache_data:
-            # 2. RERANKING LÓGICO (Filtro 2 - Nivel Dios)
-            # Verificamos coherencia antes de usar el cache
-            is_valid = await verify_cache_logic(user_prompt, cache_data['prompt'])
-            
-            if is_valid:
-                cached_res = cache_data['response']
-                # REGISTRO DE AHORRO: Enviamos a la DB que esto fue un Hit
-                tokens_saved = len(cached_res) // 4
-                
-                background_tasks.add_task(
-                    record_transaction,
-                    tenant_id=tenant_id,
-                    cost_center_id=cost_center_id,
-                    cost_real=0.0, 
-                    cache_hit=True,
-                    tokens_saved=tokens_saved,
-                    metadata={
-                        "trace_id": trace_id,
-                        "cache_status": "VERIFIED_HIT",
-                        "processed_in": CURRENT_REGION,
-                        "model": body.get("model"),
-                        "verdict": "Verified by Reranker"
-                    }
-                )
-                
-                return {
-                    "choices": [{"message": {"content": cached_res}, "finish_reason": "stop"}],
-                    "usage": {"total_tokens": 0, "cache_status": "VERIFIED_HIT"},
-                    "model": body.get("model")
-                }
-            else:
-                # Log de Reranking Prevention
-                print(f"🛡️ Reranker prevented false positive.\nUser: {user_prompt}\nCache: {cache_data['prompt']}")
-
-    # --- SEMANTIC FIREWALL & PARALLEL EXECUTION (HIGH PERFORMANCE) ---
-    
-    # 1. Sanitización PII (Para el LLM)
-    messages_safe = redact_pii(messages)
-    
-    # 2. Estimación de Input
-    est_input = sum([len(m.get("content", "")) for m in messages_safe]) // 4
-    
-    # 3. Preparar parámetros del body
-    extra_body = {k: v for k, v in body.items() if k not in ["model", "messages", "stream"]}
-
-    # 4. Dynamic Key
-    provider_name = model.split("/")[0].upper() if "/" in model else "OPENAI"
-    secret_name = f"LLM_KEY_{provider_name}"
-    api_key = get_secret(secret_name)
-    
-    # --- PARALLEL LAUNCH ---
-    # Lanzamos seguridad y generación a la vez para latencia cero.
-    guard_task = asyncio.create_task(detect_risk_with_llama_guard(messages)) # Check RAW messages
-    
-    try:
-        llm_task = asyncio.create_task(acompletion(
-            model=model,
-            messages=messages_safe,
-            stream=stream,
-            api_key=api_key,
-            **extra_body
-        ))
-        
-        # --- 200ms GUARD ---
+        # 1. AUTENTICACIÓN AGENTSHIELD (Tu seguridad)
         try:
-            is_unsafe = await asyncio.wait_for(asyncio.shield(guard_task), timeout=0.2)
-            if is_unsafe:
-                llm_task.cancel()
-                raise HTTPException(status_code=403, detail="Security Alert: Request blocked by AgentShield AI Safety Layer.")
-        except asyncio.TimeoutError:
-            # Si tarda más de 200ms, dejamos pasar (Latencia > Seguridad en este tier)
-            pass
+            as_key = authorization.replace("Bearer ", "").strip()
+            tenant_id = await get_tenant_from_header(x_api_key=as_key)
             
-        # --- AUDITORÍA BACKGROUND ---
-        if not guard_task.done():
-            background_tasks.add_task(final_security_audit, guard_task, trace_id)
+            # 1.1 BLOQUEO LEGAL (Hard Enforcement)
+            await verify_residency(tenant_id)
+
+            # 1.2 Obtener Cost Center por defecto (Para facturación)
+            cost_center_id = await get_proxy_cost_center(tenant_id)
+        except Exception as e:
+            if isinstance(e, HTTPException): raise e
+            raise HTTPException(status_code=401, detail="Invalid AgentShield API Key")
+
+        # 2. LEER PETICIÓN (Agnóstica)
+        body = await request.json()
+        model = body.get("model") 
+        messages_raw = body.get("messages", []) # RAW
+        stream = body.get("stream", False)
+
+        # 2.1 SANITIZACIÓN PII (Nivel 2026 - NLP Contextual)
+        # Sustituimos regex por la lógica de Presidio/NLP INLINE
+        messages_safe = [{"role": m["role"], "content": advanced_redact_pii(m.get("content", ""))} for m in messages_raw]
+
+        # --- SEMANTIC CACHE CHECK (ZERO COST) ---
+        if messages_safe:
+            user_prompt = messages_safe[-1].get("content", "")
             
-        # --- RESPONSE HANDLING ---
-        response = await llm_task
-        
-        if stream:
-            # CASO STREAMING
-            async def stream_generator(resp_iterator):
-                stream_cost = 0.0
-                full_content = ""
-                try:
-                    async for chunk in resp_iterator:
-                        if hasattr(chunk, "_hidden_params"):
-                            stream_cost = max(stream_cost, chunk._hidden_params.get("response_cost", 0.0))
-                        delta = chunk.choices[0].delta.content or ""
-                        full_content += delta
-                        yield f"data: {json.dumps(chunk.json())}\n\n"
-                    yield "data: [DONE]\n\n"
-                finally:
-                    final_cost = stream_cost
-                    if final_cost <= 0:
-                         final_cost = estimator.estimate_cost(model, "COMPLETION", input_unit_count=est_input + (len(full_content)//4))
+            # 1. Búsqueda Vectorial (Filtro 1)
+            cache_data = await get_semantic_cache_full_data(user_prompt)
+            
+            if cache_data:
+                # 2. RERANKING LÓGICO (Filtro 2 - Nivel Dios)
+                is_valid = await verify_cache_logic(user_prompt, cache_data['prompt'])
+                
+                if is_valid:
+                    cached_res = cache_data['response']
+                    tokens_saved = len(cached_res) // 4
                     
-                    latency_ms = (time.time() - start_time) * 1000
-                    await record_transaction(
-                        tenant_id, cost_center_id, final_cost, 
-                        {"model": model, "mode": "stream", "trace_id": trace_id, "latency_ms": latency_ms, "processed_in": CURRENT_REGION}
+                    background_tasks.add_task(
+                        record_transaction,
+                        tenant_id=tenant_id,
+                        cost_center_id=cost_center_id,
+                        cost_real=0.0, 
+                        cache_hit=True,
+                        tokens_saved=tokens_saved,
+                        metadata={
+                            "trace_id": trace_id,
+                            "cache_status": "VERIFIED_HIT",
+                            "processed_in": CURRENT_REGION,
+                            "model": body.get("model"),
+                            "verdict": "Verified by Reranker"
+                        }
                     )
+                    
+                    return {
+                        "choices": [{"message": {"content": cached_res}, "finish_reason": "stop"}],
+                        "usage": {"total_tokens": 0, "cache_status": "VERIFIED_HIT"},
+                        "model": body.get("model")
+                    }
 
-            return StreamingResponse(stream_generator(response), media_type="text/event-stream")
+        # --- SEMANTIC FIREWALL & PARALLEL EXECUTION (HIGH PERFORMANCE) ---
         
-        else:
-            # CASO NO-STREAM
-            cost_usd = response._hidden_params.get("response_cost", 0.0)
-            final_content = response.choices[0].message.content
+        # 3. Estimación de Input
+        est_input = sum([len(m.get("content", "")) for m in messages_safe]) // 4
+        
+        # 4. Preparar parámetros del body
+        extra_body = {k: v for k, v in body.items() if k not in ["model", "messages", "stream"]}
+
+        # 5. Dynamic Key (Infisical Pattern)
+        provider_name = model.split("/")[0].upper() if "/" in model else "OPENAI"
+        secret_name = f"LLM_KEY_{provider_name}"
+        api_key = get_secret(secret_name)
+        
+        # --- PARALLEL LAUNCH ---
+        # Lanzamos seguridad y generación a la vez.
+        guard_task = asyncio.create_task(detect_risk_with_llama_guard(messages_safe))
+        
+        try:
+            llm_task = asyncio.create_task(acompletion(
+                model=model,
+                messages=messages_safe,
+                stream=stream,
+                api_key=api_key,
+                **extra_body
+            ))
             
-            # Cache Setup
-            if messages and final_content:
-                background_tasks.add_task(set_semantic_cache, messages[-1].get("content", ""), final_content)
-
-            latency_ms = (time.time() - start_time) * 1000
+            # --- 200ms HARD ENFORCEMENT ---
+            try:
+                # Esperamos al guard con un timeout estricto
+                is_unsafe = await asyncio.wait_for(asyncio.shield(guard_task), timeout=0.2)
+                
+                if is_unsafe:
+                    llm_task.cancel()
+                    span.set_attribute("security.blocked", True)
+                    raise HTTPException(status_code=403, detail="AgentShield Security: Request blocked by Safety Layer.")
             
-            # Record Transaction
-            if cost_usd <= 0:
-                cost_usd = estimator.estimate_cost(model, "COMPLETION", input_unit_count=est_input + (len(final_content)//4))
+            except asyncio.TimeoutError:
+                # 2026 "No-Fissure" Policy: Si el guard es lento, CANCELAMOS por precaución (Fail-Closed).
+                llm_task.cancel()
+                logger.warning("⏱️ Security Timeout: Blocking request for safety.")
+                span.set_attribute("security.timeout_blocked", True)
+                raise HTTPException(status_code=403, detail="Security Timeout: Safety check exceeded latency limits.")
 
-            background_tasks.add_task(
-                record_transaction, tenant_id, cost_center_id, cost_usd, 
-                {"model": model, "mode": "proxy", "trace_id": trace_id, "latency_ms": latency_ms, "processed_in": CURRENT_REGION}
-            )
-            return JSONResponse(content=json.loads(response.json()))
+            # --- AUDITORÍA BACKGROUND ---
+            # Si pasó el timeout (wait_for devolvió, pero no era unsafe), ya sabemos que es seguro.
+            
+            # --- RESPONSE HANDLING ---
+            response = await llm_task
+            
+            if stream:
+                # CASO STREAMING
+                async def stream_generator(resp_iterator):
+                    stream_cost = 0.0
+                    full_content = ""
+                    try:
+                        async for chunk in resp_iterator:
+                            if hasattr(chunk, "_hidden_params"):
+                                stream_cost = max(stream_cost, chunk._hidden_params.get("response_cost", 0.0))
+                            delta = chunk.choices[0].delta.content or ""
+                            full_content += delta
+                            yield f"data: {json.dumps(chunk.json())}\n\n"
+                        yield "data: [DONE]\n\n"
+                    finally:
+                        final_cost = stream_cost
+                        if final_cost <= 0:
+                             final_cost = estimator.estimate_cost(model, "COMPLETION", input_unit_count=est_input + (len(full_content)//4))
+                        
+                        latency_ms = (time.time() - start_time) * 1000
+                        await record_transaction(
+                            tenant_id, cost_center_id, final_cost, 
+                            {"model": model, "mode": "stream", "trace_id": trace_id, "latency_ms": latency_ms, "processed_in": CURRENT_REGION}
+                        )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Provider Error: {str(e)}")
+                return StreamingResponse(stream_generator(response), media_type="text/event-stream")
+            
+            else:
+                # CASO NO-STREAM
+                cost_usd = response._hidden_params.get("response_cost", 0.0)
+                final_content = response.choices[0].message.content
+                
+                # Cache Setup
+                if messages_safe and final_content:
+                    background_tasks.add_task(set_semantic_cache, messages_safe[-1].get("content", ""), final_content)
+
+                latency_ms = (time.time() - start_time) * 1000
+                
+                # Record Transaction
+                if cost_usd <= 0:
+                    cost_usd = estimator.estimate_cost(model, "COMPLETION", input_unit_count=est_input + (len(final_content)//4))
+
+                background_tasks.add_task(
+                    record_transaction, tenant_id, cost_center_id, cost_usd, 
+                    {"model": model, "mode": "proxy", "trace_id": trace_id, "latency_ms": latency_ms, "processed_in": CURRENT_REGION}
+                )
+                return JSONResponse(content=json.loads(response.json()))
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            span.record_exception(e)
+            raise HTTPException(status_code=502, detail=f"Provider Error: {str(e)}")

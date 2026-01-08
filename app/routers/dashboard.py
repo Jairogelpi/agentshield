@@ -11,6 +11,9 @@ import csv
 import secrets
 import hashlib
 from app.services.pricing_sync import sync_prices_from_openrouter
+from opentelemetry import trace # Observabilidad permanente
+
+tracer = trace.get_tracer(__name__)
 
 router = APIRouter(prefix="/v1/dashboard", tags=["Dashboard"])
 
@@ -228,47 +231,47 @@ async def get_spending_history(
 @router.get("/reports/audit", response_class=StreamingResponse)
 async def download_dispute_pack(
     tenant_id: str = Depends(get_current_tenant_id),
-    month: str = Query(None) # YYYY-MM
+    month: str = Query(None)
 ):
     """
-    Genera el 'Dispute Pack': CSV con evidencia criptográfica para clientes.
+    Genera el 'Dispute Pack' con evidencia criptográfica REAL para validez legal.
     """
-    # Fetch data
-    query = supabase.table("receipts").select("*").eq("tenant_id", tenant_id)
-    # Filtro de fecha simple...
-    
-    data = query.execute().data
-    
-    # Generate CSV
-    output = io.StringIO()
-    writer = csv.writer(output)
-    
-    # Header Clean (Business Friendly)
-    writer.writerow(["Date", "Project / Cost Center", "User / Actor", "Model", "Task", "Tokens", "Cost (EUR)", "Signature (Proof)"])
-    
-    for r in data:
-        meta = r.get("metadata") or {}
-        usage = meta.get("usage_data") or {}
+    with tracer.start_as_current_span("export_dispute_pack") as span:
+        span.set_attribute("tenant.id", tenant_id)
         
-        writer.writerow([
-            r.get("created_at"),
-            r.get("cost_center_id"),
-            meta.get("user_metadata", {}).get("user_id") or "System",
-            meta.get("model"),
-            meta.get("user_metadata", {}).get("task_type") or "General",
-            usage.get("total_tokens", 0),
-            f"{r.get('cost', 0):.4f}",
-            "VERIFIED_SHA256_RSA" # Aquí iría el hash si lo guardáramos en columna dedicada, o partial del ID
-        ])
+        # 1. Consultar todos los campos, incluyendo la firma REAL y la región
+        query = supabase.table("receipts").select("created_at, cost_center_id, usage_data, cost_real, signature, processed_in").eq("tenant_id", tenant_id)
         
-    output.seek(0)
-    
-    response = StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv"
-    )
-    response.headers["Content-Disposition"] = "attachment; filename=agentshield_audit_pack.csv"
-    return response
+        data = query.execute().data
+        span.set_attribute("audit.records_exported", len(data))
+        
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Header profesional para auditoría
+        writer.writerow(["Date", "Project", "Model", "Cost (EUR)", "Region", "Cryptographic Proof (JWS Signature)"])
+        
+        for r in data:
+            meta = r.get("usage_data") or {}
+            
+            # 2. Insertar la firma real que se generó en billing.py
+            writer.writerow([
+                r.get("created_at"),
+                r.get("cost_center_id"),
+                meta.get("model", "N/A"),
+                f"{r.get('cost_real', 0):.6f}",
+                r.get("processed_in", "eu"),
+                r.get("signature") # <--- SOLUCIONADO: Ya no es texto estático
+            ])
+            
+        output.seek(0)
+        
+        response = StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv"
+        )
+        response.headers["Content-Disposition"] = "attachment; filename=agentshield_audit_pack.csv"
+        return response
 
 @router.post("/emergency/stop")
 async def kill_switch(tenant_id: str = Depends(get_current_tenant_id)):
@@ -626,19 +629,21 @@ async def get_residency_report(tenant_id: str = Depends(get_current_tenant_id)):
     us_count = sum(1 for r in res.data if r.get('processed_in') == 'us')
     
     compliance_status = "COMPLIANT"
-    # Si hay mezcla, es WARNING (dependiendo de la politica estricta del cliente)
-    if eu_count > 0 and us_count > 0:
-        compliance_status = "WARNING"
     
-    return {
-        "tenant_id": tenant_id,
-        "compliance_status": compliance_status,
-        "stats": {
-            "total_requests": total,
-            "processed_in_eu": eu_count,
-            "processed_in_us": us_count,
-            "compliance_percentage": 100.0 # Simplificado para MVP
-        }
+    # Verificación Estricta (Hard Enforcement)
+    # Si somos un tenant EU y hay tráfico US (o viceversa), es un error crítico.
+    # Asumimos que el tenant quiere pureza total.
+    if (eu_count > 0 and us_count > 0):
+        compliance_status = "CRITICAL_ERROR"
+    elif (us_count > 0 and tenant_id.startswith("eu-")): # Ejemplo heurístico, o check config
+        # Si tuviéramos la región 'oficial' del tenant aquí sería mejor
+        compliance_status = "CRITICAL_ERROR"
+        
+    stats = {
+        "total_requests": total,
+        "processed_in_eu": eu_count,
+        "processed_in_us": us_count,
+        "compliance_percentage": 100.0 if compliance_status == "COMPLIANT" else 0.0
     }
 
 

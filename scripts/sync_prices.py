@@ -34,9 +34,8 @@ def fetch_latest_prices():
     Descarga precios frescos de una fuente confiable (OpenRouter o similar)
     y actualiza tu base de datos 'Source of Truth'.
     """
-    print("🔄 Iniciando sincronización de precios...")
+    print("🔄 Iniciando sincronización masiva...")
     
-    # OPCIÓN A: Usar OpenRouter (Tienen todos los modelos y precios al día)
     try:
         url = "https://openrouter.ai/api/v1/models"
         resp = requests.get(url, timeout=10)
@@ -46,7 +45,6 @@ def fetch_latest_prices():
         updates = []
         for model in data:
             # Normalizar datos
-            # OpenRouter ID: "openai/gpt-4o" -> provider="openai", model="gpt-4o"
             full_id = model.get("id", "")
             parts = full_id.split("/")
             if len(parts) == 2:
@@ -57,15 +55,13 @@ def fetch_latest_prices():
                 m_id = full_id
 
             pricing = model.get("pricing", {})
-            
             try:
                 p_in = float(pricing.get("prompt", 0))
                 p_out = float(pricing.get("completion", 0))
             except ValueError:
                 continue
             
-            # Solo actualizamos si tenemos precios válidos
-            if p_in >= 0: # Permitimos 0 para free models
+            if p_in >= 0:
                 updates.append({
                     "provider": provider,
                     "model": m_id,
@@ -75,24 +71,34 @@ def fetch_latest_prices():
                     "updated_at": "now()"
                 })
 
-        # Upsert masivo en Supabase (tabla model_prices que creamos en el SQL)
         if updates:
-            print(f"📦 Detectados {len(updates)} modelos.")
-            # Supabase upsert puede fallar con listas muy grandes si supera el payload size.
-            # Lo hacemos por lotes de 100 si es necesario, pero OpenRouter tiene ~100-200 modelos.
-            # Intento directo:
-            data = supabase.table("model_prices").upsert(updates, on_conflict="provider, model").execute()
+            print(f"📦 Escribiendo {len(updates)} registros en Supabase...")
+            # Upsert por lotes (Batching)
+            batch_size = 500
+            for i in range(0, len(updates), batch_size):
+                supabase.table("model_prices").upsert(updates[i:i+batch_size], on_conflict="provider, model").execute()
             
-            # Limpieza selectiva de los precios cacheados en Redis
-            # Esto fuerza al estimator.py a leer los nuevos valores de la DB
-            keys = redis_client.keys("price:*")
-            if keys:
-                redis_client.delete(*keys)
+            print("⚡ Invalidando caché de Redis (Non-Blocking)...")
+            
+            # LÓGICA SCAN_ITER + UNLINK (Evita bucles infinitos y bloqueos)
+            batch_keys = []
+            total_deleted = 0
+            
+            for key in redis_client.scan_iter(match="price:*", count=1000):
+                batch_keys.append(key)
+                if len(batch_keys) >= 1000:
+                    redis_client.unlink(*batch_keys)
+                    total_deleted += len(batch_keys)
+                    batch_keys = []
+            
+            if batch_keys:
+                redis_client.unlink(*batch_keys)
+                total_deleted += len(batch_keys)
                 
-            print(f"✅ Precios actualizados y caché invalidado.")
+            print(f"✅ Éxito: DB actualizada y {total_deleted} llaves purgadas en Redis.")
             
     except Exception as e:
-        print(f"❌ Error actualizando precios: {e}")
+        print(f"❌ Error crítico: {e}")
 
 if __name__ == "__main__":
     fetch_latest_prices()

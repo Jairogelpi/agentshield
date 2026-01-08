@@ -24,6 +24,7 @@ class AuthorizeRequest(BaseModel):
 
 class AuthorizeResponse(BaseModel):
     decision: str # APPROVED, DENIED
+    execution_mode: str = "ACTIVE" # ACTIVE, SHADOW_SIMULATION
     aut_token: Optional[str] = None
     reason_code: Optional[str] = None
     authorization_id: str

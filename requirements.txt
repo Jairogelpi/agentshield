@@ -4,11 +4,9 @@ gunicorn
 pydantic
 supabase
 requests
-redis
-python-jose[cryptography]  # Para firmar tokens
+python-jose[cryptography]
 python-dotenv
 httpx
-numpy
 litellm
 slowapi
 opentelemetry-api
@@ -18,6 +16,9 @@ opentelemetry-instrumentation-fastapi
 logtail-python
 sentry_sdk
 sentence-transformers
-redis
+redis==4.6.0
 numpy
 rapidfuzz
+presidio-analyzer
+presidio-anonymizer
+spacy

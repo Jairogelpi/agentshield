@@ -275,10 +275,12 @@ async def authorize_transaction(
     
     auth_id = auth_log.data[0]['id']
 
-    # --- SHADOW MODE & ALERTS ---
+    # --- SHADOW MODE & ALERTS (TRANSPARENCY 2026) ---
     policy_mode = policy.get("mode", "active")
+    execution_mode = "ACTIVE"
     
     if decision == "DENIED":
+        # Disparamos alerta SIEMPRE (para que el admin sepa que algo falló o se bloqueó)
         await trigger_webhook(tenant_id, "authorization.denied", {
             "actor_id": req.actor_id,
             "reason": reason,
@@ -290,13 +292,17 @@ async def authorize_transaction(
         if policy_mode == "shadow":
             decision = "APPROVED"
             reason = f"[SHADOW MODE] Originally DENIED: {reason}"
+            execution_mode = "SHADOW_SIMULATION"
         else:
              return AuthorizeResponse(
                 decision="DENIED",
                 authorization_id=auth_id,
                 reason_code=reason,
-                estimated_cost=cost_estimated
+                estimated_cost=cost_estimated,
+                execution_mode="ACTIVE"
             )
+    else:
+        execution_mode = "ACTIVE"
 
     # 5. Generar Token (Aprobado)
     token_payload = {
@@ -318,5 +324,6 @@ async def authorize_transaction(
         authorization_id=auth_id,
         suggested_model=suggested_model,
         reason_code=reason,
-        estimated_cost=cost_estimated
+        estimated_cost=cost_estimated,
+        execution_mode=execution_mode # Transparencia Total
     )

@@ -5,6 +5,7 @@ WORKDIR /code
 
 COPY ./requirements.txt /code/requirements.txt
 RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
+RUN python -m spacy download es_core_news_md
 
 # Asegurar que HuggingFace use una ruta predecible
 ENV TRANSFORMERS_CACHE=/code/model_cache
