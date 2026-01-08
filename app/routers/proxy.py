@@ -125,9 +125,22 @@ async def universal_proxy(
         messages_raw = body.get("messages", []) # RAW
         stream = body.get("stream", False)
 
-        # 2.1 SANITIZACIÓN PII (Nivel 2026 - NLP Contextual)
-        # Sustituimos regex por la lógica de Presidio/NLP INLINE
-        messages_safe = [{"role": m["role"], "content": advanced_redact_pii(m.get("content", ""))} for m in messages_raw]
+        # 2.1 SANITIZACIÓN PII (Fail-Closed Implementation)
+        try:
+            # Intentamos limpiar los mensajes.
+            # Si advanced_redact_pii falla (ej: SpaCy no carga), lanzará ValueError.
+            messages_safe = [
+                {"role": m["role"], "content": advanced_redact_pii(m.get("content", ""))} 
+                for m in messages_raw
+            ]
+        except ValueError as e:
+            # CAPTURA DEL FAIL-CLOSED
+            # Si el PII Guard falla, detenemos todo. No contactamos al LLM.
+            logger.critical(f"⛔ CRITICAL SECURITY FAILURE: {str(e)}")
+            raise HTTPException(
+                status_code=503, # Service Unavailable
+                detail="AgentShield Security Layer is currently unavailable. Request blocked for safety."
+            )
 
         # --- SEMANTIC CACHE CHECK (ZERO COST) ---
         if messages_safe:

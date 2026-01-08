@@ -7,11 +7,25 @@ class TenantRegion(str, Enum):
     EU = "eu"
     US = "us"
 
+class AIUseCase(str, Enum):
+    # Categorías basadas en EU AI Act Annex III
+    GENERAL_PURPOSE = "general_purpose" # Chatbots, Coding (Riesgo Mínimo)
+    HR_RECRUITMENT = "hr_recruitment"   # Filtrado de CVs (Alto Riesgo)
+    CREDIT_SCORING = "credit_scoring"   # Finanzas (Alto Riesgo)
+    MEDICAL_ADVICE = "medical_advice"   # Salud (Alto Riesgo)
+    BIOMETRIC_ID = "biometric_id"       # Identificación (Riesgo Inaceptable/Alto)
+    LEGAL_ASSIST = "legal_assist"       # Justicia (Alto Riesgo)
+
 class AuthorizeRequest(BaseModel):
     actor_id: str = Field(..., description="ID del agente o usuario que ejecuta")
     cost_center_id: str = Field(..., description="ID del proyecto o centro de costes")
     provider: str = Field(..., description="openai, anthropic, etc.")
     model: str = Field(..., description="gpt-4, claude-3, etc.")
+    # NUEVO CAMPO: Obligatorio para compliance
+    use_case: AIUseCase = Field(
+        default=AIUseCase.GENERAL_PURPOSE, 
+        description="Categoría legal del uso según EU AI Act"
+    )
     max_amount: float = Field(..., gt=0, description="Límite de gasto autorizado")
     currency: str = Field("EUR", description="Moneda del límite")
     metadata: Optional[Dict] = Field(default_factory=dict)

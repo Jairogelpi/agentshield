@@ -187,10 +187,42 @@ async def authorize_transaction(
         metadata=req.metadata
     )
     
+    # --- 0. EU AI ACT COMPLIANCE CHECK (2026) ---
+    risk_config = policy.get("risk_management", {})
+    risk_rules = risk_config.get("rules", {})
+    
+    # Determinamos la acción legal basada en el caso de uso
+    # Default a ALLOW si no está definido (o si es policy vieja 1.0)
+    action = risk_rules.get(req.use_case.value, "ALLOW")
+    
+    # LÓGICA DE RIESGOS
+    if action == "PROHIBITED":
+        # Caso: Biometría o Social Scoring -> Bloqueo Inmediato
+        return AuthorizeResponse(
+            decision="DENIED",
+            authorization_id="risk-block", # No generamos ID formal si es prohibido
+            reason_code=f"EU AI Act Violation: Usage '{req.use_case.value}' is PROHIBITED.",
+            execution_mode="BLOCKED"
+        )
+
+    elif action == "HUMAN_CHECK":
+        # Caso: RRHH o Medicina -> Forzamos "Pending Approval"
+        decision = "PENDING_APPROVAL"
+        reason = f"High Risk Use Case ({req.use_case.value}). Human verification required by law."
+        
+    elif action == "LOG_AUDIT":
+        # Caso: Finanzas -> Marcamos para auditoría extendida
+        req.metadata["compliance_level"] = "high_risk_audit"
+    
     # 2. CHECK: Reglas de Presupuesto GLOBAL
     monthly_limit = policy.get("limits", {}).get("monthly", 0)
-    decision = "APPROVED"
-    reason = "Policy check passed"
+    
+    # Initialize decision for non-blocking risk actions
+    if action == "ALLOW" or action == "LOG_AUDIT":
+         decision = "APPROVED"
+         reason = "Policy check passed"
+
+    # No indentation needed for subsequent checks as they guard with 'if decision == "APPROVED"'
     
     # --- GOVERNANCE: Human-in-the-Loop (APPROVALS) ---
     governance = policy.get("governance", {})

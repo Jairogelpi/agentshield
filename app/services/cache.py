@@ -24,7 +24,7 @@ def get_embedding_model():
     return _model
 redis_client = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"))
 
-def init_cache_index():
+def init_semantic_cache_index():
     """Inicializa el índice vectorial en Redis"""
     try:
         schema = (

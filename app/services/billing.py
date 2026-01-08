@@ -23,13 +23,20 @@ async def record_transaction(
     # Incluimos la REGIÓN para prueba legal inmutable
     # + CERTIFICACIÓN DE PRIVACIDAD (PII Sanitized)
     region = metadata.get("processed_in", "eu")
+    
+    # RISK AUDIT FIELDS (EU AI ACT)
+    compliance_tag = metadata.get("compliance_level", "standard")
+    use_case = metadata.get("use_case", "general")
+
     rx_signature = sign_receipt({
         "tid": tenant_id, 
         "cc": cost_center_id, 
         "cost": cost_real,
         "region": region,
         "mode": metadata.get("execution_mode", "ACTIVE"), # Prueba auditada del modo
-        "pii_safe": True 
+        "pii_safe": True,
+        "risk_class": use_case, # <--- PRUEBA LEGAL
+        "audit_mode": compliance_tag
     })
     
     # 2. Guardar Receipt

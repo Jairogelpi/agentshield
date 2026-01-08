@@ -60,12 +60,27 @@ async def signup_tenant(req: SignupRequest):
         # Shadow Mode debe ser activado manualmente por el cliente asumiendo el riesgo.
         default_policy = {
             "meta": {
-                "version": "1.0",
+                "version": "2.0-EU-COMPLIANT",
                 "created_at": "now()",
-                "description": "Default Safety Policy"
+                "description": "Risk-Aware Default Policy"
             },
             "mode": "active", # <--- CRÍTICO: Bloquea si se supera el límite
             "panic_mode": False,
+            "risk_management": {
+                # Mapeo de casos de uso a niveles de acción (EU AI Act)
+                "rules": {
+                    "biometric_id": "PROHIBITED",     # Bloqueo total
+                    "hr_recruitment": "HUMAN_CHECK",  # Requiere aprobación manual
+                    "medical_advice": "HUMAN_CHECK",
+                    "credit_scoring": "LOG_AUDIT",    # Permitido pero con log detallado
+                    "general_purpose": "ALLOW"        # Pase libre (sujeto a presupuesto)
+                },
+                # Configuración de auditoría reforzada
+                "audit_levels": {
+                    "LOG_AUDIT": {"record_inputs": False, "retention_days": 365}, # GDPR compliant
+                    "HUMAN_CHECK": {"require_approval_token": True}
+                }
+            },
             "limits": {
                 "monthly": 50.0, # Límite inicial bajo (50€) para evitar sorpresas
                 "per_request": 2.0, # Ninguna request simple debería costar más de 2€
