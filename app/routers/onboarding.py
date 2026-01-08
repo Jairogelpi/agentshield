@@ -1,3 +1,4 @@
+# agentshield_core/app/routers/onboarding.py
 from fastapi import APIRouter, HTTPException
 from datetime import datetime
 from pydantic import BaseModel
@@ -10,20 +11,19 @@ router = APIRouter(tags=["Onboarding"])
 
 class SignupRequest(BaseModel):
     company_name: str
-    email: str # Opcional, para contacto
-    owner_id: str # UUID de Supabase Auth (Usuario Humano)
+    email: str # Opcional
+    owner_id: str # UUID de Supabase Auth
     region: TenantRegion = TenantRegion.EU
-    # CAMBIO: Campo obligatorio. Si el frontend no lo manda True, falla.
     accept_tos: bool 
-    tos_version_seen: str = "v1.0" # La versión que el usuario vio en el frontend
+    tos_version_seen: str = "v1.0"
 
 @router.post("/v1/signup")
 async def signup_tenant(req: SignupRequest):
-    # 2. Validación Legal (Gatekeeper)
+    # 2. Validación Legal
     if not req.accept_tos:
         raise HTTPException(
             status_code=400, 
-            detail="You must accept the Terms of Service (including Shadow Mode liability clauses) to proceed."
+            detail="You must accept the Terms of Service to proceed."
         )
 
     # 1. Generar API Key única
@@ -36,10 +36,9 @@ async def signup_tenant(req: SignupRequest):
             "name": req.company_name,
             "api_key_hash": key_hash,
             "is_active": True,
-            "default_markup": 1.20, # Default margen
+            "default_markup": 1.20,
             "owner_id": req.owner_id,
             "region": req.region.value,
-            # DATOS LEGALES VINCULANTES
             "tos_accepted": True,
             "tos_accepted_at": datetime.utcnow().isoformat(),
             "tos_version": req.tos_version_seen
@@ -47,7 +46,7 @@ async def signup_tenant(req: SignupRequest):
         
         new_tenant = res.data[0]
         
-        # 3. Crear un Centro de Coste por defecto
+        # 3. Crear Centro de Coste Default
         default_cc = {
             "tenant_id": new_tenant['id'],
             "name": "Default Project",
@@ -55,68 +54,45 @@ async def signup_tenant(req: SignupRequest):
         }
         supabase.table("cost_centers").insert(default_cc).execute()
         
-        # 3. POLÍTICA "SECURE BY DEFAULT" (Blindaje Legal)
-        # El modo es 'active' (BLOQUEANTE) por defecto.
-        # Shadow Mode debe ser activado manualmente por el cliente asumiendo el riesgo.
+        # 4. Política Default
         default_policy = {
-            "meta": {
-                "version": "2.0-EU-COMPLIANT",
-                "created_at": "now()",
-                "description": "Risk-Aware Default Policy"
-            },
-            "mode": "active", # <--- CRÍTICO: Bloquea si se supera el límite
+            "meta": {"version": "2.0-EU-COMPLIANT", "created_at": "now()"},
+            "mode": "active",
             "panic_mode": False,
             "risk_management": {
-                # Mapeo de casos de uso a niveles de acción (EU AI Act)
                 "rules": {
-                    "biometric_id": "PROHIBITED",     # Bloqueo total
-                    "hr_recruitment": "HUMAN_CHECK",  # Requiere aprobación manual
+                    "biometric_id": "PROHIBITED",
+                    "hr_recruitment": "HUMAN_CHECK",
                     "medical_advice": "HUMAN_CHECK",
-                    "credit_scoring": "LOG_AUDIT",    # Permitido pero con log detallado
-                    "general_purpose": "ALLOW"        # Pase libre (sujeto a presupuesto)
-                },
-                # Configuración de auditoría reforzada
-                "audit_levels": {
-                    "LOG_AUDIT": {"record_inputs": False, "retention_days": 365}, # GDPR compliant
-                    "HUMAN_CHECK": {"require_approval_token": True}
+                    "credit_scoring": "LOG_AUDIT",
+                    "general_purpose": "ALLOW"
                 }
             },
-            "limits": {
-                "monthly": 50.0, # Límite inicial bajo (50€) para evitar sorpresas
-                "per_request": 2.0, # Ninguna request simple debería costar más de 2€
-                "actors": {} # Sin excepciones por usuario
-            },
+            "limits": {"monthly": 50.0, "per_request": 2.0, "actors": {}},
             "allowlist": {
-                # Por seguridad, solo permitimos modelos "baratos/seguros" al inicio.
-                # El cliente debe añadir GPT-4 explícitamente si lo quiere.
                 "models": ["gpt-3.5-turbo", "gpt-4o-mini", "claude-3-haiku"],
                 "providers": ["openai", "anthropic", "groq"]
             },
-            "governance": {
-                # Cualquier gasto único > 5€ requiere aprobación humana
-                "require_approval_above_cost": 5.0 
-            },
-            "smart_routing": {
-                "enabled": False # Routing apagado para evitar comportamientos "magicos" no solicitados
-            }
+            "governance": {"require_approval_above_cost": 5.0},
+            "smart_routing": {"enabled": False}
         }
         
-        # Insertamos esta política robusta
         supabase.table("policies").insert({
             "tenant_id": new_tenant['id'],
             "name": "Default Safety Policy",
             "rules": default_policy,
-            "mode": "active", # Redundancia en columna SQL para búsquedas rápidas
+            "mode": "active",
             "is_active": True
         }).execute()
         
         return {
             "status": "created",
             "tenant_id": new_tenant['id'],
-            "api_key": raw_key, # ¡MOSTRAR SOLO UNA VEZ!
+            "api_key": raw_key,
             "region": req.region.value,
-            "instructions": f"Usa el endpoint de tu región: https://api-{req.region.value}.agentshield.io",
-            "message": "Guarda esta clave en lugar seguro. No se volverá a mostrar."
+            # CORRECCIÓN AQUÍ: Usamos tu nuevo dominio
+            "instructions": "Usa tu endpoint seguro: https://getagentshield.com",
+            "message": "Guarda esta clave en lugar seguro."
         }
         
     except Exception as e:

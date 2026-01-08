@@ -151,7 +151,13 @@ app.add_middleware(
 # En producción, esto evita ataques de Host Header Injection
 app.add_middleware(
     TrustedHostMiddleware, 
-    allowed_hosts=["agentshield.onrender.com", "localhost", "127.0.0.1", "*.agentshield.io"]
+    allowed_hosts=[
+        "getagentshield.com",       # ✅ Tu dominio real
+        "www.getagentshield.com",   # ✅ Tu subdominio
+        "localhost",                # ✅ Desarrollo
+        "127.0.0.1"                 # ✅ Desarrollo
+    ]
+    # Eliminamos "agentshield.onrender.com" para forzar que entren por Cloudflare
 )
 
 # 1.8. Compression (Performance)
