@@ -5,6 +5,7 @@ import os
 from rapidfuzz import fuzz
 
 async def verify_cache_logic(new_prompt: str, cached_prompt: str) -> bool:
+    """
     Validación en dos capas:
     1. Léxica (Local - <1ms): Si es casi idéntico, aceptamos.
     2. Semántica (IA - <200ms): Si hay duda, preguntamos al modelo.

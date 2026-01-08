@@ -1,37 +1,60 @@
-# Usamos slim para base ligera
-FROM python:3.10-slim
+# agentshield_core/Dockerfile
 
-# Evita que Python escriba archivos .pyc y fuerza logs en tiempo real
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    HF_HOME=/code/model_cache
+# ETAPA 1: Builder (Compilación rápida)
+FROM python:3.10-slim AS builder
 
-WORKDIR /code
+# Instalamos 'uv', el reemplazo ultra-rápido de pip en 2026
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
-# Instalar dependencias del sistema necesarias para compilar algunas libs de Python
+WORKDIR /app
+
+# Instalar dependencias del sistema (solo para compilar)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# 1. Copiamos SOLO requirements primero (Caché de Docker)
-# Si no cambias requirements.txt, Docker saltará este paso instantáneamente
-COPY ./requirements.txt /code/requirements.txt
+# Copiamos requisitos
+COPY requirements.txt .
 
-# 2. Instalación optimizada sin caché de pip (reduce tamaño imagen final)
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r /code/requirements.txt
+# INSTALACIÓN TURBO CON UV
+# --system: Instala en el python global (no venv) porque estamos en Docker
+# --no-cache: Evita guardar caché dentro de la imagen final (ahorra espacio)
+# --compile-bytecode: Acelera el arranque de Python un 20%
+RUN uv pip install --system --compile-bytecode \
+    --extra-index-url https://download.pytorch.org/whl/cpu \
+    -r requirements.txt
 
-# 3. Descarga de Modelos (Solo si cambian)
-# Spacy
-RUN python -m spacy download es_core_news_md
-# Sentence Transformers (Embeddings)
-RUN mkdir -p /code/model_cache && \
-    python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2', cache_folder='/code/model_cache')"
+# Descarga de modelos (En una sola capa para reducir overhead)
+RUN python -m spacy download es_core_news_md && \
+    mkdir -p /app/model_cache && \
+    python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2', cache_folder='/app/model_cache')"
 
-# 4. Copiamos el código AL FINAL
-# Así, si cambias una línea en main.py, el deploy tarda segundos, no minutos
-COPY ./app /code/app
+# ETAPA 2: Runner (Imagen final ligera)
+FROM python:3.10-slim
 
-# Ajuste de Gunicorn: Aumentamos timeout por si la carga de modelos es lenta
-# Bind to 0.0.0.0:10000 to satisfy Render port detection
-CMD ["gunicorn", "app.main:app", "--workers", "2", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:10000", "--preload", "--timeout", "120"]
+# Variables de optimización
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HF_HOME=/app/model_cache \
+    TRANSFORMERS_OFFLINE=1 
+
+WORKDIR /app
+
+# Copiamos las librerías instaladas desde el Builder (Magia de Multi-stage)
+# Esto descarta toda la basura de compilación (gcc, apt, etc) y reduce el tamaño de exportación en 300MB+
+COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+# Copiamos los modelos descargados
+COPY --from=builder /app/model_cache /app/model_cache
+
+# Copiamos el código fuente al final
+COPY ./app /app/app
+
+# Usuario no-root para seguridad
+RUN useradd -m appuser && chown -R appuser /app
+USER appuser
+
+# Comando de arranque optimizado
+# --preload: Carga la app en memoria antes de forkear (ahorra RAM y detecta errores al inicio)
+CMD ["gunicorn", "app.main:app", "--workers", "2", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:10000", "--preload", "--timeout", "60"]

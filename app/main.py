@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from app.routers import authorize, receipt, dashboard, proxy, onboarding
+from app.routers import authorize, receipt, dashboard, proxy, onboarding, compliance
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from slowapi import _rate_limit_exceeded_handler
@@ -20,6 +20,7 @@ from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExport
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from logtail import LogtailHandler
+from app.services.safe_logger import PIIRedactionFilter # PII Firewall
 import sentry_sdk
 
 # 0. Sentry Error Tracking
@@ -32,6 +33,13 @@ if sentry_dsn:
 logtail_token = os.getenv("LOGTAIL_TOKEN")
 if logtail_token:
     handler = LogtailHandler(source_token=logtail_token)
+    
+    # --- PII FIREWALL PARA LOGS ---
+    # Cualquier log que salga hacia Betterstack será escaneado y limpiado anónimamente.
+    pii_filter = PIIRedactionFilter()
+    handler.addFilter(pii_filter)
+    # ------------------------------
+    
     logger = logging.getLogger(__name__)
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
@@ -107,6 +115,7 @@ app.include_router(receipt.router)
 app.include_router(dashboard.router)
 app.include_router(proxy.router)
 app.include_router(onboarding.router)
+app.include_router(compliance.router)
 
 # Endpoint de salud para Render (ping)
 @app.get("/health")

@@ -15,6 +15,24 @@ from app.services.cache import get_semantic_cache_full_data, set_semantic_cache
 from app.services.reranker import verify_cache_logic
 from app.services.vault import get_secret
 from app.services.pii_guard import advanced_redact_pii
+from opentelemetry.trace import Status, StatusCode
+
+# Helper para trazas seguras (PII Firewall para OTEL)
+def record_safe_exception(span, e: Exception):
+    """
+    Registra una excepción en el Trace pero censura el mensaje.
+    """
+    # Creamos una 'copia' limpia del mensaje de error
+    safe_msg = advanced_redact_pii(str(e))
+    
+    # Registramos un evento de error manual en lugar de la excepción cruda
+    span.add_event("exception", {
+        "exception.type": type(e).__name__,
+        "exception.message": safe_msg, # Mensaje limpio
+        "exception.stacktrace": "Stacktrace withheld for PII safety" # Opcional: ocultar stacktrace si contiene datos
+    })
+    
+    span.set_status(Status(StatusCode.ERROR, safe_msg))
 from opentelemetry import trace
 import logging
 import time
@@ -53,7 +71,8 @@ async def detect_risk_with_llama_guard(messages: list) -> bool:
         except Exception as e:
             # 2026 Standard: Fail-Closed. 
             # Si el servicio de seguridad no responde, NO se procesa la petición.
-            span.record_exception(e)
+            # PII FIREWALL: Censuramos la excepción antes de enviarla a Grafana
+            record_safe_exception(span, e)
             logger.critical(f"🚨 Safety Layer Failure (Fail-Closed triggered): {e}")
             return True # Asumimos riesgo si no podemos verificar
 
@@ -246,5 +265,5 @@ async def universal_proxy(
         except HTTPException:
             raise
         except Exception as e:
-            span.record_exception(e)
+            record_safe_exception(span, e)
             raise HTTPException(status_code=502, detail=f"Provider Error: {str(e)}")
