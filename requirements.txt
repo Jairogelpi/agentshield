@@ -1,3 +1,4 @@
+# --- LIBRERÍAS LIGERAS ---
 fastapi
 uvicorn[standard]
 gunicorn
@@ -15,10 +16,18 @@ opentelemetry-exporter-otlp
 opentelemetry-instrumentation-fastapi
 logtail-python
 sentry_sdk
-sentence-transformers
 redis==4.6.0
 numpy
 rapidfuzz
+
+# --- MOTOR AI (VERSIÓN CPU OPTIMIZADA - < 300MB) ---
+# Esto reduce el tamaño de la imagen en un 80%
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
+
+# Instalar después de torch para evitar que traiga la versión GPU
+sentence-transformers
 presidio-analyzer
 presidio-anonymizer
 spacy
