@@ -1,7 +1,9 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse
 from app.routers import authorize, receipt, dashboard, proxy, onboarding, compliance, analytics
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.limiter import limiter
@@ -40,8 +42,13 @@ if logtail_token:
     handler.addFilter(pii_filter)
     # ------------------------------
     
-    logger = logging.getLogger(__name__)
+    # Configurar el logger ROOT de 'agentshield' para que todos lo hereden
+    logger = logging.getLogger("agentshield")
     logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    
+    # También mantenemos el logger local de main para los mensajes de startup
+    main_logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
 
 
@@ -84,6 +91,44 @@ setup_observability(app)
 # Inicializar Cache Vectorial
 init_semantic_cache_index()
 
+# --- 🛡️ SECURITY MIDDLEWARE: CLOUDFLARE AUTH + HSTS 🛡️ ---
+@app.middleware("http")
+async def security_guard(request: Request, call_next):
+    # 1. Bypass para Health Check y Desarrollo
+    if request.url.path == "/health" or os.getenv("ENVIRONMENT") == "development":
+        return await call_next(request)
+
+    # 2. VERIFICACIÓN DE CLOUDFLARE (El Candado)
+    # Usamos la nueva llave 'X-AgentShield-Auth'
+    expected_secret = os.getenv("CLOUDFLARE_PROXY_SECRET")
+    incoming_secret = request.headers.get("X-AgentShield-Auth")
+
+    if expected_secret and incoming_secret != expected_secret:
+        # Usamos el logger 'agentshield' configurado globalmente
+        # Intentamos sacar la IP real para el log, si no, usamos la del host
+        real_ip = request.headers.get("cf-connecting-ip", request.client.host)
+        logger.warning(f"⛔ Direct access blocked from {real_ip}")
+        return JSONResponse(
+            status_code=403, 
+            content={"error": "Direct access forbidden. Use getagentshield.com"}
+        )
+
+    # 3. PROCESAR PETICIÓN
+    response = await call_next(request)
+
+    # 4. INYECCIÓN HSTS (El Blindaje SSL)
+    # Obliga al navegador a recordar que este sitio SOLO funciona con HTTPS por 1 año.
+    # includeSubDomains: Protege también api.tudominio.com, etc.
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    
+    # 5. CABECERAS EXTRA DE SEGURIDAD (Bonus Enterprise)
+    # Evita que tu API sea cargada en iframes ajenos (Clickjacking)
+    response.headers["X-Frame-Options"] = "DENY"
+    # Evita que el navegador adivine tipos de archivo (MIME Sniffing)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+
+    return response
+
 # 1. Configuración CORS (Production Ready)
 # Leemos de variable de entorno. Ejemplo: "https://app.agentshield.io,https://admin.agentshield.io"
 allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
@@ -109,6 +154,10 @@ app.add_middleware(
     allowed_hosts=["agentshield.onrender.com", "localhost", "127.0.0.1", "*.agentshield.io"]
 )
 
+# 1.8. Compression (Performance)
+# Comprime respuestas > 500 bytes (Reduce ancho de banda 70%)
+app.add_middleware(GZipMiddleware, minimum_size=500)
+
 # 2. Conectar Routers
 app.include_router(authorize.router)
 app.include_router(receipt.router)
@@ -119,7 +168,33 @@ app.include_router(compliance.router)
 app.include_router(analytics.router)
 
 # Endpoint de salud para Render (ping)
+# Endpoint de salud para Render (Deep Health Check)
+from app.db import redis_client, supabase
+import time
+
 @app.get("/health")
-def health_check():
-    return {"status": "ok", "service": "agentshield-core"}
+def health_check(full: bool = False):
+    """
+    Ping de salud. Si full=True, verifica DB y Redis.
+    Render llama a esto a menudo, así que por defecto es rápido.
+    """
+    health_status = {"status": "ok", "service": "agentshield-core", "timestamp": time.time()}
+    
+    if full:
+        try:
+            # 1. Check Redis
+            if not redis_client.ping():
+                raise Exception("Redis PING failed")
+            health_status["redis"] = "connected"
+            
+            # 2. Check Supabase (Query simple)
+            supabase.table("cost_centers").select("id").limit(1).execute()
+            health_status["db"] = "connected"
+            
+        except Exception as e:
+            # Si infraestructura crítica falla, 503
+            logger.critical(f"Health Check Failed: {e}")
+            raise HTTPException(status_code=503, detail=f"Infrastructure Error: {e}")
+            
+    return health_status
 

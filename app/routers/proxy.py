@@ -8,6 +8,7 @@ from app.routers.authorize import get_tenant_from_header
 from app.services.billing import record_transaction
 from app.estimator import estimator
 from app.db import redis_client
+from app.limiter import limiter
 import re
 from app.logic import create_aut_token, verify_residency
 from app.logic import create_aut_token, verify_residency
@@ -97,6 +98,7 @@ router = APIRouter(tags=["Universal Proxy"])
 # Soportados: OpenAI, Anthropic, Google Vertex, AWS Bedrock, Ollama, HuggingFace, etc.
 
 @router.post("/v1/chat/completions")
+@limiter.limit("600/minute")
 async def universal_proxy(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -266,7 +268,16 @@ async def universal_proxy(
             else:
                 # CASO NO-STREAM
                 cost_usd = response._hidden_params.get("response_cost", 0.0)
-                final_content = response.choices[0].message.content
+                raw_content = response.choices[0].message.content
+                
+                # --- BONUS: OUTPUT PII SCRUBBING (DLP) ---
+                # Limpiamos la SALIDA del LLM para evitar fugas de datos generados o alucinados
+                if raw_content:
+                    final_content = await loop.run_in_executor(None, advanced_redact_pii, raw_content)
+                    # Actualizamos el objeto de respuesta
+                    response.choices[0].message.content = final_content
+                else:
+                    final_content = ""
                 
                 # Cache Setup
                 if messages_safe and final_content:
