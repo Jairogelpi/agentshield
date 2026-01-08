@@ -1,5 +1,8 @@
 import os
 import redis
+import logging
+
+logger = logging.getLogger("agentshield.cache")
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from redis.commands.search.query import Query
@@ -18,7 +21,7 @@ def get_embedding_model():
     """
     global _model
     if _model is None:
-        print("🚀 Cargando modelo de embeddings en memoria...")
+        logger.info("🚀 Cargando modelo de embeddings en memoria...")
         # El modelo ya debe estar en la carpeta de cache de HuggingFace gracias al Dockerfile
         _model = SentenceTransformer('all-MiniLM-L6-v2')
     return _model
@@ -37,7 +40,7 @@ def init_semantic_cache_index():
         redis_client.ft("idx:cache").create_index(
             schema, definition=IndexDefinition(prefix=["cache:"], index_type=IndexType.HASH)
         )
-        print("✅ Semantic Cache Index Created.")
+        logger.info("✅ Semantic Cache Index Created.")
     except:
         pass # El índice ya existe
 
@@ -60,7 +63,7 @@ async def get_semantic_cache(prompt: str, threshold: float = 0.92):
             if score < (1 - threshold): 
                 return res.docs[0].response
     except Exception as e:
-        print(f"Cache Query Error: {e}")
+        logger.error(f"Cache Query Error: {e}")
     return None
 
 async def get_semantic_cache_full_data(prompt: str, threshold: float = 0.92):
@@ -85,7 +88,7 @@ async def get_semantic_cache_full_data(prompt: str, threshold: float = 0.92):
                     "response": res.docs[0].response
                 }
     except Exception as e:
-        print(f"Cache Full Query Error: {e}")
+        logger.error(f"Cache Full Query Error: {e}")
     return None
 
 async def set_semantic_cache(prompt: str, response: str):
@@ -105,4 +108,4 @@ async def set_semantic_cache(prompt: str, response: str):
         # Expiración opcional para ahorrar memoria (ej: 7 días)
         redis_client.expire(key, 604800)
     except Exception as e:
-        print(f"Cache Save Error: {e}")
+        logger.warning(f"Cache Save Error: {e}")

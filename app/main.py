@@ -71,10 +71,10 @@ def setup_observability(app):
             
             # Instrumentar FastAPI automáticamente
             FastAPIInstrumentor.instrument_app(app)
-            print(f"✅ Observability initialized for {service_name} -> Grafana Cloud")
+            logger.info(f"✅ Observability initialized for {service_name} -> Grafana Cloud")
             
     except Exception as e:
-        print(f"Grafana/OTEL Init Error: {e}")
+        logger.error(f"Grafana/OTEL Init Error: {e}")
 
 app = FastAPI(title="AgentShield API", version="1.0.0")
 
@@ -92,7 +92,7 @@ origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin
 # Si estamos en modo, podemos permitir localhost por defecto si no se especificó nada
 if not origins:
     # Default restrictivo o log de advertencia
-    print("WARNING: No ALLOWED_ORIGINS set. CORS policy is empty effectively.")
+    logger.warning("WARNING: No ALLOWED_ORIGINS set. CORS policy is empty effectively.")
 
 app.add_middleware(
     CORSMiddleware,

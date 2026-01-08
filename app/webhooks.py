@@ -1,5 +1,8 @@
 import httpx
 from app.db import supabase
+import logging
+
+logger = logging.getLogger("agentshield.webhooks")
 
 async def trigger_webhook(tenant_id: str, event_type: str, payload: dict):
     """
@@ -26,4 +29,4 @@ async def trigger_webhook(tenant_id: str, event_type: str, payload: dict):
             }, timeout=2.0)
     except Exception as e:
         # Log silencioso, no queremos romper el flujo principal
-        print(f"Failed to send webhook: {e}")
+        logger.error(f"Failed to send webhook: {e}")

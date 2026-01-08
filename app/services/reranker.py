@@ -3,6 +3,9 @@ from litellm import acompletion
 import asyncio
 import os
 from rapidfuzz import fuzz
+import logging
+
+logger = logging.getLogger("agentshield.reranker")
 
 async def verify_cache_logic(new_prompt: str, cached_prompt: str) -> bool:
     """
@@ -44,7 +47,7 @@ async def verify_cache_logic(new_prompt: str, cached_prompt: str) -> bool:
         # Fallback silencioso: si hay timeout o error, devolvemos False
         # Mejor gastar tokens en el LLM real que dar una respuesta incorrecta.
         if isinstance(e, asyncio.TimeoutError):
-            print(f"⚠️ Reranker skipped (Timeout > 200ms)")
+            logger.warning("⏱️ Reranker skipped (Timeout > 200ms)")
         else:
-            print(f"⚠️ Reranker Error: {e}")
+            logger.error(f"⚠️ Reranker Error: {e}")
         return False

@@ -82,10 +82,11 @@ async def final_security_audit(guard_task: asyncio.Task, trace_id: str):
     try:
         is_unsafe = await guard_task
         if is_unsafe:
-            print(f"🚨 Security Alert (Post-Response): Trace {trace_id} contained unsafe content.")
+            # CRITICAL: Esto debe despertar al equipo de seguridad
+            logger.critical(f"🚨 Security Alert (Post-Response): Trace {trace_id} contained unsafe content.")
             # Aquí podrías marcar el trace como "flagged" en DB
     except Exception as e:
-        print(f"Background Guard Error: {e}")
+        logger.error(f"Background Guard Error: {e}")
 
 
 
@@ -127,13 +128,20 @@ async def universal_proxy(
         stream = body.get("stream", False)
 
         # 2.1 SANITIZACIÓN PII (Fail-Closed Implementation)
+        # 2.1 SANITIZACIÓN PII (Fail-Closed Implementation)
         try:
             # Intentamos limpiar los mensajes.
             # Si advanced_redact_pii falla (ej: SpaCy no carga), lanzará ValueError.
-            messages_safe = [
-                {"role": m["role"], "content": advanced_redact_pii(m.get("content", ""))} 
-                for m in messages_raw
-            ]
+            # OPTIMIZACIÓN ASYNC: Ejecutamos en Threadpool para no bloquear EventLoop
+            loop = asyncio.get_running_loop()
+            messages_safe = []
+            
+            for m in messages_raw:
+                content = m.get("content", "")
+                # Offload CPU-bound task to thread pool
+                safe_content = await loop.run_in_executor(None, advanced_redact_pii, content)
+                messages_safe.append({"role": m["role"], "content": safe_content})
+                
         except ValueError as e:
             # CAPTURA DEL FAIL-CLOSED
             # Si el PII Guard falla, detenemos todo. No contactamos al LLM.

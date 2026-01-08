@@ -1,5 +1,6 @@
 # app/services/billing.py
-from app.db import supabase, increment_spend
+from app.db import supabase, increment_spend, redis_client
+import json
 from app.logic import sign_receipt
 import logging
 
@@ -62,9 +63,22 @@ async def record_transaction(
             "tokens_saved": tokens_saved 
         }).execute()
     except Exception as e:
-        logger.error(f"Error saving receipt for tenant {tenant_id}: {e}")
-        # Intentamos seguir para cobrar al menos en Redis
-        pass
+        logger.error(f"CRITICAL BILLING FAILURE: {e}")
+        # Guardar en una lista de 'fallidos' en Redis para reprocesar luego
+        # DEAD LETTER QUEUE (DLQ)
+        failed_receipt = {
+            "tenant_id": tenant_id,
+            "cost_center_id": cost_center_id,
+            "cost_real": cost_real,
+            "signature": rx_signature,
+            "metadata": metadata,
+            "auth_id": auth_id, 
+            "error": str(e)
+        }
+        try:
+            redis_client.lpush("failed_receipts", json.dumps(failed_receipt))
+        except Exception as redis_e:
+             logger.critical(f"🔥 CATASTROPHIC FAILURE: Could not save to DLQ either: {redis_e}")
         
     # 3. Actualizar Contadores (Redis + DB) (Solo si hay coste real)
     if not cache_hit and cost_real > 0:

@@ -2,6 +2,9 @@ import os
 from supabase import create_client, Client
 import redis
 import asyncio
+import logging
+
+logger = logging.getLogger("agentshield.db")
 
 # Configuración
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -20,7 +23,14 @@ async def get_current_spend(tenant_id: str, cost_center: str):
         return float(spend)
     
     # Fallback a DB si Redis está vacío (cold start)
-    res = supabase.table("cost_centers").select("current_spend").eq("tenant_id", tenant_id).eq("id", cost_center).execute()
+    # Async Wrapper para evitar bloqueo
+    loop = asyncio.get_running_loop()
+    
+    def _fetch_db():
+        return supabase.table("cost_centers").select("current_spend").eq("tenant_id", tenant_id).eq("id", cost_center).execute()
+        
+    res = await loop.run_in_executor(None, _fetch_db)
+    
     if res.data:
         val = res.data[0]['current_spend']
         redis_client.set(key, val)
@@ -48,7 +58,7 @@ async def increment_spend(tenant_id: str, cost_center: str, amount: float):
         return new_redis_total
 
     except Exception as e:
-        print(f"❌ Error updating Redis spend: {e}")
+        logger.error(f"❌ Error updating Redis spend: {e}")
         # Si falla Redis, intentamos al menos registrar en DB de forma síncrona como fallback
         return await persist_spend_to_db(tenant_id, cost_center, amount)
 
@@ -57,13 +67,18 @@ async def persist_spend_to_db(tenant_id: str, cost_center: str, amount: float):
     Tarea de fondo para persistir el gasto en Supabase.
     """
     try:
-        response = supabase.rpc("increment_spend", {
-            "p_tenant_id": tenant_id,
-            "p_cc_id": cost_center,
-            "p_amount": amount
-        }).execute()
+        loop = asyncio.get_running_loop()
+        
+        def _exec_rpc():
+            return supabase.rpc("increment_spend", {
+                "p_tenant_id": tenant_id,
+                "p_cc_id": cost_center,
+                "p_amount": amount
+            }).execute()
+            
+        response = await loop.run_in_executor(None, _exec_rpc)
         return response.data
     except Exception as e:
         # Log crítico si la DB falla, para reintentar o auditar después
-        print(f"CRITICAL: DB Persistence failed for {tenant_id}: {e}")
+        logger.critical(f"CRITICAL: DB Persistence failed for {tenant_id}: {e}", extra={"tenant_id": tenant_id})
         return None

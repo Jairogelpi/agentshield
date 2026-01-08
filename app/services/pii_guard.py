@@ -3,6 +3,9 @@ import re
 from presidio_analyzer import AnalyzerEngine
 from presidio_anonymizer import AnonymizerEngine
 from presidio_anonymizer.entities import OperatorConfig
+import logging
+
+logger = logging.getLogger("agentshield.pii_guard")
 
 # --- CAPA 1: MOTOR REGEX (Simulación de Edge - <1ms) ---
 # Compilamos patrones al inicio para velocidad máxima.
@@ -68,6 +71,6 @@ def advanced_redact_pii(text: str) -> str:
         return anonymized_result.text
 
     except Exception as e:
-        print(f"⚠️ PII Guard Error: {e}")
+        logger.critical(f"⚠️ PII Guard Security Failure: {e}")
         # Política Fail-Closed (Bloqueo si falla la seguridad)
         raise ValueError("Security Subsystem Failed: PII Guard could not load. Request blocked.")
