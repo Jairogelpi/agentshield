@@ -22,9 +22,9 @@ def get_real_ip_address(request: Request):
 # Inicializamos el Limiter
 redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
 
-# Usamos redis:// estándar (Limits gestiona el pool)
-# if redis_url.startswith("redis://"):
-#    redis_url = redis_url.replace("redis://", "redis+async://")
+# Garantizamos que sea 'redis://' estándar para Limits (si viene con +async lo quitamos)
+if redis_url.startswith("redis+async://"):
+    redis_url = redis_url.replace("redis+async://", "redis://")
 
 limiter = Limiter(
     key_func=get_real_ip_address, 
