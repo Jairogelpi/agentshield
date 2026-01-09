@@ -21,6 +21,8 @@ WORKDIR /app
 COPY rust_module /app/rust_module
 WORKDIR /app/rust_module
 # Esto compila el código Rust y genera un archivo .whl (wheel) de Python optimizado
+# Fix for Python 3.13 support in PyO3 0.21
+ENV PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
 RUN maturin build --release --strip
 
 # 4. Instalar Dependencias Python + Nuestro Módulo Rust

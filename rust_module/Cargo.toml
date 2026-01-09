@@ -8,7 +8,7 @@ name = "agentshield_rust"
 crate-type = ["cdylib"] # Importante para ser cargado por Python
 
 [dependencies]
-pyo3 = { version = "0.21", features = ["extension-module"] }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310"] }
 rsa = "0.9"
 sha2 = "0.10"
 base64 = "0.22"

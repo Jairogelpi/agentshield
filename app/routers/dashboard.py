@@ -298,3 +298,54 @@ async def get_residency_report(tenant_id: str = Depends(get_current_tenant_id)):
     us_count = sum(1 for r in res.data if r.get('processed_in') == 'us')
     compliance_status = "CRITICAL_ERROR" if (eu_count > 0 and us_count > 0) else "COMPLIANT"
     return {"total_requests": len(res.data), "processed_in_eu": eu_count, "processed_in_us": us_count, "compliance_percentage": 100.0 if compliance_status == "COMPLIANT" else 0.0}
+
+@router.get("/audit/transactions")
+async def get_transaction_audit_log(tenant_id: str = Depends(get_current_tenant_id), limit: int = 50):
+    """
+    Financial Audit Endpoint (Double Write Verification).
+    Muestra el log inmutable de intentos de cobro, útil para conciliar si Redis falla.
+    """
+    res = supabase.table("pending_transactions_log")\
+        .select("*")\
+        .eq("tenant_id", tenant_id)\
+        .order("created_at", desc=True)\
+        .limit(limit)\
+        .execute()
+    return res.data
+
+@router.get("/market/health")
+async def get_market_health_matrix(tenant_id: str = Depends(get_current_tenant_id)):
+    """
+    Scientific Arbitrage Dashboard.
+    Muestra qué modelos están 'calientes' (baja latencia/volatilidad) y cuáles están penalizados.
+    Data source: Filtro de Kalman en Redis (Real-time).
+    """
+    # 1. Obtener modelos activos
+    res = supabase.table("model_prices").select("model, provider").eq("is_active", True).execute()
+    models = res.data
+    
+    health_matrix = []
+    for m in models:
+        model_id = m['model']
+        # Recuperar estado del Filtro de Kalman
+        lat_x = await redis_client.get(f"stats:latency:{model_id}:x")
+        vol_p = await redis_client.get(f"stats:latency:{model_id}:p")
+        
+        # Interpretación
+        latency_est = float(lat_x) if lat_x else 0.0
+        uncertainty = float(vol_p) if vol_p else 0.0
+        
+        status = "HEALTHY"
+        if latency_est > 2000: status = "DEGRADED"
+        if uncertainty > 5.0: status = "VOLATILE"
+        
+        health_matrix.append({
+            "model": model_id,
+            "provider": m['provider'],
+            "estimated_latency_ms": round(latency_est, 1),
+            "volatility_index": round(uncertainty, 2), # < 1.0 es muy estable
+            "status": status
+        })
+        
+    # Ordenar por latencia (los mejores primero)
+    return sorted(health_matrix, key=lambda x: x["estimated_latency_ms"])

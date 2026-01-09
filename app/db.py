@@ -8,6 +8,9 @@ import asyncio
 import logging
 import time
 
+from decimal import Decimal
+import logging
+
 logger = logging.getLogger("agentshield.db")
 
 # Configuración
@@ -38,7 +41,7 @@ async def get_current_spend(tenant_id: str, cost_center: str):
         return float(val)
     return 0.0
 
-async def increment_spend(tenant_id: str, cost_center: str, amount: float):
+async def increment_spend(tenant_id: str, cost_center: str, amount: Decimal, metadata: dict = None):
     """
     1. Actualiza Redis (Velocidad).
     2. Escribe en WAL (Seguridad).
@@ -47,8 +50,12 @@ async def increment_spend(tenant_id: str, cost_center: str, amount: float):
     spend_key = f"spend:{tenant_id}:{cost_center}"
     
     try:
+        # Convert Decimal to float just for Redis (Redis requires float/string)
+        # But we keep precision in the WAL payload
+        amount_float = float(amount)
+        
         # 1. ACTUALIZACIÓN INSTANTÁNEA (Redis - Hot Path)
-        new_total = await redis_client.incrbyfloat(spend_key, amount)
+        new_total = await redis_client.incrbyfloat(spend_key, amount_float)
         
         # 2. WRITE-AHEAD LOG (WAL) - El seguro de vida
         # Creamos un paquete de datos inmutable
@@ -56,13 +63,32 @@ async def increment_spend(tenant_id: str, cost_center: str, amount: float):
             "id": str(uuid.uuid4()), # Idempotencia
             "tid": tenant_id,
             "cc": cost_center,
-            "amt": amount,
-            "ts": time.time()
+            "amt": str(amount), # Serialize as String to preserve precision in JSON
+            "ts": time.time(),
+            "meta": metadata or {}
         }
-        raw_payload = json.dumps(charge_payload)
         
-        # Guardamos en la cola ANTES de intentar procesar
-        await redis_client.rpush(WAL_QUEUE_KEY, raw_payload)
+        # 3. DOUBLE WRITE STRATEGY (Redis WAL + Supabase Log)
+        # Lanzamos ambas escrituras de seguridad.
+        # Si Redis muere, queda el Log en PG. Si PG está lento, Redis responde rápido.
+        loop = asyncio.get_running_loop()
+        
+        # A. Escribir en Tabla de Logs (Caja Negra) - Fire & Forget optimizado
+        # No esperamos a que termine para no penalizar latencia, pero se lanza.
+        log_task = loop.run_in_executor(None, lambda: supabase.table("pending_transactions_log").insert({
+            "trace_id": (metadata or {}).get("trace_id", str(uuid.uuid4())),
+            "tenant_id": tenant_id,
+            "cost_center_id": cost_center,
+            "amount": float(amount), # Postgres numeric accepts float, but string is safer if supported
+            "metadata": metadata or {},
+            "status": "PENDING"
+        }).execute())
+        
+        # B. Escribir en Redis WAL (Cola de Procesamiento Real)
+        wal_task = redis_client.rpush(WAL_QUEUE_KEY, json.dumps(charge_payload))
+        
+        # Esperamos solo al WAL de Redis (es ultra rápido y es nuestro source of truth primario)
+        await wal_task
         
         # 3. PROCESAMIENTO ASÍNCRONO
         # Pasamos el raw_payload para poder borrarlo exactamente después
@@ -96,7 +122,7 @@ async def persist_spend_with_wal(charge: dict, raw_payload: str):
     except Exception as e:
         logger.error(f"CRITICAL: Async persistence crashed: {e}. Data remains in WAL for recovery.")
 
-async def _persist_to_db_core(tenant_id: str, cost_center: str, amount: float) -> bool:
+async def _persist_to_db_core(tenant_id: str, cost_center: str, amount: Decimal) -> bool:
     """Núcleo de escritura en Supabase (RPC)"""
     try:
         loop = asyncio.get_running_loop()
@@ -104,7 +130,7 @@ async def _persist_to_db_core(tenant_id: str, cost_center: str, amount: float) -
             return supabase.rpc("increment_spend", {
                 "p_tenant_id": tenant_id,
                 "p_cc_id": cost_center,
-                "p_amount": amount
+                "p_amount": float(amount) # RPC parameter
             }).execute()
         
         await loop.run_in_executor(None, _exec)

@@ -21,6 +21,7 @@ langdetect
 sentry_sdk
 redis==4.6.0
 numpy
+fpdf2
 orjson
 rapidfuzz
 

@@ -3,13 +3,14 @@ from app.db import supabase, increment_spend, redis_client
 from app.utils import fast_json as json
 from app.logic import sign_receipt
 import logging
+from decimal import Decimal
 
 logger = logging.getLogger(__name__)
 
 async def record_transaction(
     tenant_id: str, 
     cost_center_id: str, 
-    cost_real: float, 
+    cost_real: object, # Decimal expected (typed as object to avoid Pydantic issues if passed directly)
     metadata: dict, 
     auth_id: str = None,
     cache_hit: bool = False,
@@ -87,6 +88,6 @@ async def record_transaction(
         
     # 3. Actualizar Contadores (Redis + DB) (Solo si hay coste real)
     if not cache_hit and cost_real > 0:
-        await increment_spend(tenant_id, cost_center_id, cost_real)
+        await increment_spend(tenant_id, cost_center_id, cost_real, metadata)
     
     return rx_signature
