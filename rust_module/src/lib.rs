@@ -101,15 +101,15 @@ fn sign_c2pa_image_fast(
         output_vec.extend_from_slice(image_bytes);
     }
 
-    Ok(PyBytes::new(py, &output_vec).unbind().into())
+    Ok(pyo3::types::PyBytes::new_bound(py, &output_vec).unbind().into())
 }
 
 /// El módulo Python
 /// El módulo Python
 #[pymodule]
 fn agentshield_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(sign_c2pa_image_fast, m)?)?;
-    m.add_function(wrap_pyfunction!(scan_pii_fast, m)?)?;
-    m.add_function(wrap_pyfunction!(scrub_pii_fast, m)?)?;
+    m.add_function(wrap_pyfunction!(sign_c2pa_image_fast)?)?;
+    m.add_function(wrap_pyfunction!(scan_pii_fast)?)?;
+    m.add_function(wrap_pyfunction!(scrub_pii_fast)?)?;
     Ok(())
 }

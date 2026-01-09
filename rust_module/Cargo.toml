@@ -15,7 +15,6 @@ base64 = "0.22"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 pkcs8 = { version = "0.10", features = ["std", "pem"] }
-img-parts = "0.3" 
 regex = "1.10"
 lazy_static = "1.4"
 crc32fast = "1.3"
