@@ -19,9 +19,9 @@ tracer = trace.get_tracer(__name__)
 router = APIRouter(prefix="/v1/dashboard", tags=["Dashboard"])
 
 # Helper rápido para política
-def get_policy_rules(tenant_id: str):
+async def get_policy_rules(tenant_id: str):
     cache_key = f"policy:active:{tenant_id}"
-    cached = redis_client.get(cache_key)
+    cached = await redis_client.get(cache_key)
     if cached: return json.loads(cached)
     res = supabase.table("policies").select("rules").eq("tenant_id", tenant_id).eq("is_active", True).execute()
     if res.data: return res.data[0]['rules']
@@ -35,13 +35,13 @@ async def get_summary(
     current_spend = 0.0
     if cost_center_id:
         spend_key = f"spend:{tenant_id}:{cost_center_id}"
-        current_spend = float(redis_client.get(spend_key) or 0.0)
+        current_spend = float(await redis_client.get(spend_key) or 0.0)
     else:
         res = supabase.table("cost_centers").select("current_spend").eq("tenant_id", tenant_id).execute()
         if res.data:
             current_spend = sum(float(item['current_spend']) for item in res.data)
             
-    policy = get_policy_rules(tenant_id)
+    policy = await get_policy_rules(tenant_id)
     monthly_limit = policy.get("limits", {}).get("monthly", 0)
     
     return {
@@ -76,7 +76,7 @@ async def get_policy_config(tenant_id: str = Depends(get_current_tenant_id)):
 @router.put("/policy")
 async def update_policy(update_req: UpdatePolicyRequest, tenant_id: str = Depends(get_current_tenant_id)):
     supabase.table("policies").update({"rules": update_req.rules}).eq("tenant_id", tenant_id).eq("is_active", True).execute()
-    redis_client.delete(f"policy:active:{tenant_id}")
+    await redis_client.delete(f"policy:active:{tenant_id}")
     return {"status": "updated", "message": "Policy cache cleared and DB updated."}
 
 class UpdateWebhookRequest(BaseModel):
@@ -163,8 +163,8 @@ async def kill_switch(tenant_id: str = Depends(get_current_tenant_id)):
     panic_rules = {"limits": {"monthly": 0, "per_request": 0}, "allowlist": {"providers": [], "models": []}, "panic_mode": True}
     try: supabase.table("policies").update({"rules": panic_rules}).eq("tenant_id", tenant_id).eq("is_active", True).execute()
     except Exception: pass
-    redis_client.delete(f"policy:active:{tenant_id}")
-    redis_client.set(f"kill_switch:{tenant_id}", "block", ex=3600*24)
+    await redis_client.delete(f"policy:active:{tenant_id}")
+    await redis_client.set(f"kill_switch:{tenant_id}", "block", ex=3600*24)
     return {"status": "STOPPED", "message": "EMERGENCY STOP ACTIVATED."}
 
 @router.get("/export/csv")
@@ -228,7 +228,7 @@ async def create_cost_center(config: CostCenterConfig, tenant_id: str = Depends(
 async def update_cost_center(cc_id: str, config: CostCenterConfig, tenant_id: str = Depends(get_current_tenant_id)):
     data = {"name": config.name, "markup": config.markup, "monthly_limit": config.monthly_limit, "is_billable": config.is_billable, "hard_limit_daily": config.hard_limit_daily}
     supabase.table("cost_centers").update(data).eq("id", cc_id).eq("tenant_id", tenant_id).execute()
-    redis_client.delete(f"spend:{tenant_id}:{cc_id}")
+    await redis_client.delete(f"spend:{tenant_id}:{cc_id}")
     return {"status": "updated", "message": "Project configuration updated"}
 
 @router.delete("/cost-centers/{cc_id}")
@@ -279,7 +279,7 @@ class CustomPrice(BaseModel):
 async def set_custom_price(price: CustomPrice, tenant_id: str = Depends(get_current_tenant_id)):
     data = {"provider": f"custom-{tenant_id}", "model": price.model_name, "price_in": price.price_per_unit, "price_out": 0, "is_active": True, "updated_at": "now()"}
     supabase.table("model_prices").upsert(data, on_conflict="provider, model").execute()
-    redis_client.delete(f"price:{price.model_name}")
+    await redis_client.delete(f"price:{price.model_name}")
     return {"status": "ok", "message": f"Price set for {price.model_name}"}
 
 @router.get("/traces/{trace_id}/full")

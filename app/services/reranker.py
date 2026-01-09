@@ -16,7 +16,11 @@ async def verify_cache_logic(new_prompt: str, cached_prompt: str) -> bool:
     try:
         # CAPA 1: Validación léxica local con RapidFuzz
         # ratio 95 significa que las frases son prácticamente iguales (typos, espacios)
-        lexical_score = fuzz.ratio(new_prompt.lower(), cached_prompt.lower())
+        # CRITICAL: fuzz.ratio es CPU bound, aunque rápido. En carga masiva, mejor no bloquear loop.
+        lexical_score = await asyncio.get_running_loop().run_in_executor(
+            None, 
+            lambda: fuzz.ratio(new_prompt.lower(), cached_prompt.lower())
+        )
         
         if lexical_score >= 90:
             return True # Aprobado instantáneamente sin red

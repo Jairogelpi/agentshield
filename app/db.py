@@ -1,9 +1,9 @@
 # agentshield_core/app/db.py
 import os
-import json
+from app.utils import fast_json as json
 import uuid
 from supabase import create_client, Client
-import redis
+import redis.asyncio as redis
 import asyncio
 import logging
 import time
@@ -24,7 +24,7 @@ WAL_QUEUE_KEY = "wal:pending_charges"
 async def get_current_spend(tenant_id: str, cost_center: str):
     """Lectura optimista desde Redis con Fallback a DB"""
     key = f"spend:{tenant_id}:{cost_center}"
-    spend = redis_client.get(key)
+    spend = await redis_client.get(key)
     if spend: return float(spend)
     
     loop = asyncio.get_running_loop()
@@ -34,7 +34,7 @@ async def get_current_spend(tenant_id: str, cost_center: str):
     res = await loop.run_in_executor(None, _fetch)
     if res.data:
         val = res.data[0]['current_spend']
-        redis_client.set(key, val)
+        await redis_client.set(key, val)
         return float(val)
     return 0.0
 
@@ -48,7 +48,7 @@ async def increment_spend(tenant_id: str, cost_center: str, amount: float):
     
     try:
         # 1. ACTUALIZACIÓN INSTANTÁNEA (Redis - Hot Path)
-        new_total = redis_client.incrbyfloat(spend_key, amount)
+        new_total = await redis_client.incrbyfloat(spend_key, amount)
         
         # 2. WRITE-AHEAD LOG (WAL) - El seguro de vida
         # Creamos un paquete de datos inmutable
@@ -62,7 +62,7 @@ async def increment_spend(tenant_id: str, cost_center: str, amount: float):
         raw_payload = json.dumps(charge_payload)
         
         # Guardamos en la cola ANTES de intentar procesar
-        redis_client.rpush(WAL_QUEUE_KEY, raw_payload)
+        await redis_client.rpush(WAL_QUEUE_KEY, raw_payload)
         
         # 3. PROCESAMIENTO ASÍNCRONO
         # Pasamos el raw_payload para poder borrarlo exactamente después
@@ -88,7 +88,7 @@ async def persist_spend_with_wal(charge: dict, raw_payload: str):
         if success:
             # ✅ ÉXITO: Borramos del WAL (ACK)
             # LREM borra 1 ocurrencia de ese string exacto
-            redis_client.lrem(WAL_QUEUE_KEY, 1, raw_payload)
+            await redis_client.lrem(WAL_QUEUE_KEY, 1, raw_payload)
         else:
             # ⚠️ FALLO LÓGICO: Se queda en Redis para reintento futuro
             logger.warning(f"DB Write failed inside WAL logic for {charge['tid']}")
@@ -113,14 +113,14 @@ async def _persist_to_db_core(tenant_id: str, cost_center: str, amount: float) -
         logger.error(f"Supabase RPC Error: {e}")
         return False
 
-def recover_pending_charges():
+async def recover_pending_charges():
     """
     🚑 RECOVERY WORKER (Se ejecuta al inicio)
     Revisa si quedaron cobros pendientes de un crash anterior y los procesa.
     """
     try:
         # Ver cuantos hay
-        count = redis_client.llen(WAL_QUEUE_KEY)
+        count = await redis_client.llen(WAL_QUEUE_KEY)
         if count == 0:
             logger.info("✅ WAL Limpio. Sin cobros huérfanos.")
             return
@@ -129,22 +129,27 @@ def recover_pending_charges():
         
         # Procesamos todo el backlog
         # Nota: En un sistema masivo, esto se haría por lotes.
-        pending_items = redis_client.lrange(WAL_QUEUE_KEY, 0, -1)
+        pending_items = await redis_client.lrange(WAL_QUEUE_KEY, 0, -1)
         
         recovered = 0
+        loop = asyncio.get_running_loop()
+        
         for raw in pending_items:
             try:
                 data = json.loads(raw)
-                # Ejecutamos síncronamente (bloqueante) para asegurar consistencia al arranque
+                # Ejecutamos en executor para no bloquear el loop principal si tarda
                 # Usamos la función rpc directamente
-                supabase.rpc("increment_spend", {
-                    "p_tenant_id": data['tid'],
-                    "p_cc_id": data['cc'],
-                    "p_amount": data['amt']
-                }).execute()
+                def _exec_recovery():
+                    return supabase.rpc("increment_spend", {
+                        "p_tenant_id": data['tid'],
+                        "p_cc_id": data['cc'],
+                        "p_amount": data['amt']
+                    }).execute()
+                
+                await loop.run_in_executor(None, _exec_recovery)
                 
                 # Si funciona, borramos
-                redis_client.lrem(WAL_QUEUE_KEY, 1, raw)
+                await redis_client.lrem(WAL_QUEUE_KEY, 1, raw)
                 recovered += 1
             except Exception as e:
                 logger.error(f"Failed to recover item {raw}: {e}")

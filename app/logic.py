@@ -4,6 +4,7 @@ import time
 from jose import jwt
 from app.db import supabase, redis_client
 from fastapi import HTTPException
+import json
 
 # Estas variables DEBEN estar en tu entorno de Render (.env)
 SECRET_KEY = os.getenv("ASARL_SECRET_KEY") 
@@ -39,12 +40,12 @@ CURRENT_SERVER_REGION = os.getenv("SERVER_REGION", "eu")
 
 async def verify_residency(tenant_id: str):
     # Buscamos la región del tenant (idealmente en caché de Redis)
-    tenant_region = redis_client.get(f"region:{tenant_id}")
+    tenant_region = await redis_client.get(f"region:{tenant_id}")
     
     if not tenant_region:
         res = supabase.table("tenants").select("region").eq("id", tenant_id).single().execute()
         tenant_region = res.data.get("region", "eu") # Default fallback
-        redis_client.set(f"region:{tenant_id}", tenant_region, ex=3600)
+        await redis_client.set(f"region:{tenant_id}", tenant_region, ex=3600)
     else:
         tenant_region = tenant_region.decode('utf-8')
 
@@ -54,3 +55,31 @@ async def verify_residency(tenant_id: str):
             status_code=451, # Unavailable For Legal Reasons
             detail=f"Data Residency: Your data is hosted in {tenant_region}. Please use the correct regional endpoint."
         )
+
+# --- HELPER: Obtener Política Activa (Shared Logic) ---
+async def get_active_policy(tenant_id: str):
+    """
+    Recupera la política activa. Cachea en Redis por 5 minutos.
+    """
+    cache_key = f"policy:active:{tenant_id}"
+    cached_policy = await redis_client.get(cache_key)
+    
+    if cached_policy:
+        return json.loads(cached_policy)
+
+    # Fallback a DB
+    response = supabase.table("policies")\
+        .select("rules")\
+        .eq("tenant_id", tenant_id)\
+        .eq("is_active", True)\
+        .order("version", desc=True)\
+        .limit(1)\
+        .execute()
+
+    if not response.data:
+        return {"limits": {"monthly": 0, "per_request": 0}}
+
+    policy_rules = response.data[0]['rules']
+    await redis_client.setex(cache_key, 300, json.dumps(policy_rules))
+    
+    return policy_rules

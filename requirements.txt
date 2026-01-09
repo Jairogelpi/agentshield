@@ -1,7 +1,6 @@
 # --- LIBRERÍAS LIGERAS ---
 fastapi
-uvicorn[standard]
-gunicorn
+granian
 pydantic
 supabase
 requests
@@ -22,6 +21,7 @@ langdetect
 sentry_sdk
 redis==4.6.0
 numpy
+orjson
 rapidfuzz
 
 # --- MOTOR AI (VERSIÓN CPU OPTIMIZADA - < 300MB) ---
@@ -30,8 +30,7 @@ rapidfuzz
 torch
 torchvision
 
-# Instalar después de torch para evitar que traiga la versión GPU
-sentence-transformers
-presidio-analyzer
-presidio-anonymizer
-spacy
+# --- SOVEREIGN AI (LOCAL INFERENCE) ---
+onnxruntime>=1.18.0
+tokenizers>=0.19.0
+numpy

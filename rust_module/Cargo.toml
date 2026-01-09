@@ -1,0 +1,20 @@
+[package]
+name = "agentshield_rust"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "agentshield_rust"
+crate-type = ["cdylib"] # Importante para ser cargado por Python
+
+[dependencies]
+pyo3 = { version = "0.21", features = ["extension-module"] }
+rsa = "0.9"
+sha2 = "0.10"
+base64 = "0.22"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+pkcs8 = { version = "0.10", features = ["std", "pem"] }
+img-parts = "0.3" 
+regex = "1.10"
+lazy_static = "1.4"

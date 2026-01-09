@@ -64,17 +64,17 @@ async def sync_prices_from_openrouter():
             deleted_count = 0
             
             # Iteramos sobre todas las claves que coinciden
-            for key in redis_client.scan_iter(match="price:*", count=1000):
+            async for key in redis_client.scan_iter(match="price:*", count=1000):
                 batch_keys.append(key)
                 # Borramos en lotes para no llenar la memoria de la lista
                 if len(batch_keys) >= 1000:
-                    redis_client.unlink(*batch_keys)
+                    await redis_client.unlink(*batch_keys)
                     deleted_count += len(batch_keys)
                     batch_keys = []
             
             # Borrar remanentes
             if batch_keys:
-                redis_client.unlink(*batch_keys)
+                await redis_client.unlink(*batch_keys)
                 deleted_count += len(batch_keys)
             
             logger.info(f"✅ Sincronización completada. {len(updates_list)} actualizados en DB. {deleted_count} invalidados en Redis.")

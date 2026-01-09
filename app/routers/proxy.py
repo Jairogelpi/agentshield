@@ -1,6 +1,7 @@
 # agentshield_core/app/routers/proxy.py
 import os
-import json
+import os
+from app.utils import fast_json as json # RUST ACCELERATED JSON
 import asyncio
 import time
 import logging
@@ -18,13 +19,22 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives import serialization
 
+# --- RUST ACCELERATOR (HYBRID MODE) ---
+try:
+    import agentshield_rust
+    RUST_AVAILABLE = True
+    logger.info("🚀 Rust Accelerator Loaded: C2PA Signing is running on bare metal.")
+except ImportError:
+    RUST_AVAILABLE = False
+    logger.warning("🐢 Rust Accelerator Not Found: Falling back to slow Python signing.")
+
 # Imports propios
 from app.routers.authorize import get_tenant_from_header
 from app.services.billing import record_transaction
 from app.estimator import estimator
 from app.db import redis_client, supabase
 from app.limiter import limiter
-from app.logic import verify_residency
+from app.logic import verify_residency, get_active_policy
 from app.services.cache import get_semantic_cache_full_data, set_semantic_cache
 from app.services.reranker import verify_cache_logic
 from app.services.vault import get_secret
@@ -66,6 +76,22 @@ def sign_image_content(image_data: bytes, tenant_id: str, trace_id: str, model: 
         }
         manifest_str = json.dumps(manifest, sort_keys=True) # Sort keys para determinismo
 
+        # --- CAMINO RÁPIDO (RUST: ZERO-GIL) ---
+        if RUST_AVAILABLE:
+            try:
+                # ¡Aquí ocurre la magia! Pasamos bytes y strings, Rust hace el resto.
+                # Sin GIL, sin overhead de objetos Python intermedios.
+                signed_bytes = agentshield_rust.sign_c2pa_image_fast(
+                    image_data, 
+                    priv_key_pem, 
+                    manifest_str
+                )
+                return bytes(signed_bytes)
+            except Exception as e:
+                logger.error(f"Rust Signing Failed (Fallback to Python): {e}")
+                # Fallback to existing logic...
+
+        # --- CAMINO LENTO (PYTHON LEGACY) ---
         # 3. FIRMA CRIPTOGRÁFICA (RSA-SHA256)
         # Usamos la llave privada para firmar el hash del manifiesto
         private_key = serialization.load_pem_private_key(
@@ -113,12 +139,12 @@ def sign_image_content(image_data: bytes, tenant_id: str, trace_id: str, model: 
 # --- HELPER: Obtener Cost Center ---
 async def get_proxy_cost_center(tenant_id: str) -> str:
     cache_key = f"tenant:default_cc:{tenant_id}"
-    cached = redis_client.get(cache_key)
+    cached = await redis_client.get(cache_key)
     if cached: return cached
     res = supabase.table("cost_centers").select("id").eq("tenant_id", tenant_id).limit(1).execute()
     if res.data:
         cc_id = res.data[0]['id']
-        redis_client.setex(cache_key, 3600, cc_id)
+        await redis_client.setex(cache_key, 3600, cc_id)
         return cc_id
     raise HTTPException(status_code=400, detail="No active Cost Center found.")
 
@@ -150,21 +176,31 @@ async def execute_honeypot_trap(messages: list, original_model: str, trace_id: s
     try:
         # DDoS Protection: Count hits
         hits_key = f"honeypot:hits:{ip_address}"
-        hits = redis_client.incr(hits_key)
-        if hits == 1: redis_client.expire(hits_key, 3600) # Reset every hour
+        hits = await redis_client.incr(hits_key)
+        if hits == 1: await redis_client.expire(hits_key, 3600) # Reset every hour
 
         if hits > 5:
             # BAN HAMMER 🔨
             logger.critical(f"🚫 BANNING IP {ip_address} for Honeypot Abuse")
-            redis_client.setex(f"blacklist:{ip_address}", 86400, "1") # 24h Ban
+            await redis_client.setex(f"blacklist:{ip_address}", 86400, "1") # 24h Ban
 
-        trap_response = await acompletion(model="groq/llama3-8b-8192", messages=trap_messages, temperature=0.8) # Más temperatura = Más creatividad engañosa
-        fake_content = trap_response.choices[0].message.content
+        # OPTIMIZACIÓN 2026: Static Trap (Zero Latency / Zero Cost)
+        # En lugar de gastar tokens generando basura, devolvemos basura pre-calculada de alta calidad.
+        fake_content = (
+            "Traceback (most recent call last):\n"
+            '  File "/usr/local/lib/secure_enclave.py", line 402, in _authorize\n'
+            "    return self.session.query(AdminCredentials).filter_by(token=token).first()\n"
+            "sqlalchemy.exc.OperationalError: (psycopg2.OperationalError) SSL connection has been closed unexpectedly\n"
+            "DUMPING MEMORY SEGMENT 0x8BADF00D...\n"
+            "offset: 00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F\n"
+            "000000: 48 65 6C 6C 6F 20 57 6F  72 6C 64 21 00 00 00 00  Hello World!....\n"
+            "[SYSTEM HALTED: INTEGRITY CHECK FAILED]"
+        )
         
         # Guardamos la evidencia
         supabase.table("security_events").insert({
             "tenant_id": tenant_id, "trace_id": trace_id, "attacker_ip": ip_address,
-            "input_payload": messages[-1]['content'][:500], "trap_response": fake_content[:500], "severity": "CRITICAL_DECEPTION"
+            "input_payload": messages[-1]['content'][:500], "trap_response": "STATIC_TRAP_V1", "severity": "CRITICAL_DECEPTION"
         }).execute()
         
         return {
@@ -208,28 +244,42 @@ async def chat_proxy(request: Request, background_tasks: BackgroundTasks, author
         client_ip = request.headers.get("cf-connecting-ip", request.client.host)
 
         # 0. BLACKLIST CHECK (Zero-Cost Firewall)
-        if redis_client.get(f"blacklist:{client_ip}"):
+        if await redis_client.get(f"blacklist:{client_ip}"):
              logger.warning(f"⛔ Blacklisted IP blocked: {client_ip}")
              raise HTTPException(status_code=403, detail="Access Denied by Security Policy")
 
         # Auth & Setup
         try:
             as_key = authorization.replace("Bearer ", "").strip()
+            # PARALLEL AUTH CHECKS (Reduce latency by performing IO concurrently)
+            # 1. Tenant ID is needed first
             tenant_id = await get_tenant_from_header(x_api_key=as_key)
-            await verify_residency(tenant_id)
-            cost_center_id = await get_proxy_cost_center(tenant_id)
+            
+            # 2. Run independent checks in parallel
+            # verify_residency, get_proxy_cost_center, get_active_policy can run together
+            results = await asyncio.gather(
+                verify_residency(tenant_id),
+                get_proxy_cost_center(tenant_id),
+                get_active_policy(tenant_id)
+            )
+            # Unpack results (verify_residency returns check result, others return data)
+            _, cost_center_id, policy = results
+            
+            tenant_allowlist = policy.get("allowlist", {}).get("models", [])
+            
         except Exception as e: raise HTTPException(status_code=401, detail="Auth Failed")
 
         body = await request.json()
         model = body.get("model")
         messages = body.get("messages", [])
         stream = body.get("stream", False)
+        # Extraemos max_tokens para evitar errores en respuestas largas
+        max_tokens = body.get("max_tokens") or body.get("max_completion_tokens") or 1000
 
         # PII Scrubbing
-        loop = asyncio.get_running_loop()
         clean_msgs = []
         for m in messages:
-            clean_msgs.append({"role": m["role"], "content": await loop.run_in_executor(None, advanced_redact_pii, m.get("content",""))})
+            clean_msgs.append({"role": m["role"], "content": await advanced_redact_pii(m.get("content",""))})
 
         # Cache Check
         if clean_msgs:
@@ -241,7 +291,12 @@ async def chat_proxy(request: Request, background_tasks: BackgroundTasks, author
 
         # --- 💰 ARBITRAJE SEMÁNTICO UNIVERSAL ---
         complexity_analysis = await arbitrage_engine.analyze_complexity(clean_msgs)
-        final_model, arbitrage_status, savings_pct = await arbitrage_engine.find_best_bidder(model, complexity_analysis)
+        final_model, arbitrage_status, savings_pct = await arbitrage_engine.find_best_bidder(
+            model, 
+            complexity_analysis,
+            max_output_tokens=int(max_tokens),
+            tenant_allowlist=tenant_allowlist
+        )
         
         if final_model != model:
             logger.info(f"⚡ SMART ROUTING: {model} -> {final_model} (Score: {complexity_analysis.get('score')})")
@@ -296,7 +351,7 @@ async def chat_proxy(request: Request, background_tasks: BackgroundTasks, author
                 await record_transaction(tenant_id, cost_center_id, cost, {"model": model, "mode": "stream"})
             return StreamingResponse(generator(response), media_type="text/event-stream")
         else:
-            final_text = await loop.run_in_executor(None, advanced_redact_pii, response.choices[0].message.content)
+            final_text = await advanced_redact_pii(response.choices[0].message.content)
             response.choices[0].message.content = final_text
             
             # Caching & Logging
@@ -332,7 +387,7 @@ async def image_proxy(request: Request, background_tasks: BackgroundTasks, autho
         size = body.get("size", "1024x1024")
 
         # PII en Prompt
-        safe_prompt = advanced_redact_pii(prompt)
+        safe_prompt = await advanced_redact_pii(prompt)
 
         # Provider Key
         provider = "OPENAI" # Default para imágenes por ahora
@@ -350,24 +405,21 @@ async def image_proxy(request: Request, background_tasks: BackgroundTasks, autho
                 n=1
             )
             
-            # 2. Procesar y Firmar (C2PA)
-            signed_data = []
+            # 2. Procesar y Firmar (C2PA) - PARALLEL EXECUTION
             loop = asyncio.get_running_loop()
             
-            for item in response.data:
-                # Decodificar b64 original
+            async def process_image(item):
                 raw_img_bytes = base64.b64decode(item.b64_json)
-                
-                # FIRMA DIGITAL (CPU Bound -> ThreadPool)
                 signed_img_bytes = await loop.run_in_executor(
                     None, 
                     sign_image_content, 
                     raw_img_bytes, tenant_id, trace_id, model
                 )
-                
-                # Recodificar a b64
                 signed_b64 = base64.b64encode(signed_img_bytes).decode('utf-8')
-                signed_data.append({"b64_json": signed_b64, "revised_prompt": item.revised_prompt})
+                return {"b64_json": signed_b64, "revised_prompt": item.revised_prompt}
+
+            # Gather all signing tasks
+            signed_data = await asyncio.gather(*(process_image(item) for item in response.data))
 
             # 3. Calcular Costes
             cost = estimator.estimate_cost(model, "IMAGE_GENERATION", resolution=size)

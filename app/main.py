@@ -14,6 +14,9 @@ from app.services.cache import init_semantic_cache_index
 
 import os
 import logging
+from logging.handlers import QueueHandler, QueueListener
+import queue
+import atexit
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
@@ -42,12 +45,22 @@ if logtail_token:
     handler.addFilter(pii_filter)
     # ------------------------------
     
-    # Configurar el logger ROOT de 'agentshield' para que todos lo hereden
+    # --- NON-BLOCKING LOGGING (Queue Pattern) ---
+    # Logtail/Console I/O can be slow. We offload it to a background thread.
+    log_queue = queue.Queue(-1) # Infinite queue
+    queue_handler = QueueHandler(log_queue)
+    
+    # The listener runs in a separate thread and calls the actual expensive handlers
+    listener = QueueListener(log_queue, handler)
+    listener.start()
+    atexit.register(listener.stop)
+    
+    # Configurar el logger ROOT de 'agentshield' para usar la cola
     logger = logging.getLogger("agentshield")
-    logger.addHandler(handler)
+    logger.addHandler(queue_handler)
     logger.setLevel(logging.INFO)
     
-    # También mantenemos el logger local de main para los mensajes de startup
+    # También mantenemos el logger local de main
     main_logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
 
@@ -93,12 +106,18 @@ async def lifespan(app: FastAPI):
     
     # 1. Recuperación de Cobros (WAL Recovery)
     try:
-        import threading
-        recovery_thread = threading.Thread(target=recover_pending_charges)
-        recovery_thread.start()
+        import asyncio
+        asyncio.create_task(recover_pending_charges())
     except Exception as e:
         logger.critical(f"Failed to start Recovery Worker: {e}")
         
+        
+    # 2. Inicializar Cache Vectorial
+    await init_semantic_cache_index()
+
+    # 3. Iniciar Oráculo de Mercado (Async) - Obtiene precios "frescos"
+    asyncio.create_task(update_market_rules())
+
     yield 
     
     # --- SHUTDOWN ---
@@ -109,8 +128,8 @@ app = FastAPI(title="AgentShield API", version="1.0.0", lifespan=lifespan)
 # Setup Observability (OTEL + Grafana)
 setup_observability(app)
 
-# Inicializar Cache Vectorial
-init_semantic_cache_index()
+# Setup Observability (OTEL + Grafana)
+setup_observability(app)
 
 # --- 🛡️ SECURITY MIDDLEWARE: CLOUDFLARE AUTH + HSTS 🛡️ ---
 @app.middleware("http")
@@ -182,8 +201,9 @@ app.add_middleware(
 )
 
 # 1.8. Compression (Performance)
-# Comprime respuestas > 500 bytes (Reduce ancho de banda 70%)
-app.add_middleware(GZipMiddleware, minimum_size=500)
+# ELIMINADO: Cloudflare gestiona Gzip/Brotli en el Edge.
+# Hacerlo en Python es gastar CPU innecesariamente.
+# app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # 2. Conectar Routers
 app.include_router(authorize.router)
@@ -200,7 +220,7 @@ from app.db import redis_client, supabase
 import time
 
 @app.get("/health")
-def health_check(full: bool = False):
+async def health_check(full: bool = False):
     """
     Ping de salud. Si full=True, verifica DB y Redis.
     Render llama a esto a menudo, así que por defecto es rápido.
@@ -210,7 +230,7 @@ def health_check(full: bool = False):
     if full:
         try:
             # 1. Check Redis
-            if not redis_client.ping():
+            if not await redis_client.ping():
                 raise Exception("Redis PING failed")
             health_status["redis"] = "connected"
             

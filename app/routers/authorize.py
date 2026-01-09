@@ -6,7 +6,7 @@ from fastapi import APIRouter, Header, HTTPException, Depends, Security, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.models import AuthorizeRequest, AuthorizeResponse
 from app.db import supabase, redis_client
-from app.logic import create_aut_token
+from app.logic import create_aut_token, get_active_policy
 from app.webhooks import trigger_webhook
 from datetime import datetime
 from app.estimator import estimator
@@ -27,7 +27,7 @@ async def get_tenant_from_header(x_api_key: str = Header(...)):
     
     # Check Redis Cache
     cache_key = f"tenant:apikey:{api_key_hash}"
-    cached_tenant_id = redis_client.get(cache_key)
+    cached_tenant_id = await redis_client.get(cache_key)
     if cached_tenant_id:
         return cached_tenant_id
 
@@ -42,7 +42,7 @@ async def get_tenant_from_header(x_api_key: str = Header(...)):
         raise HTTPException(status_code=403, detail="Tenant is inactive")
 
     # Guardar en Redis por 1 hora (TTL 3600)
-    redis_client.setex(cache_key, 3600, tenant['id'])
+    await redis_client.setex(cache_key, 3600, tenant['id'])
     
     return tenant['id']
 
@@ -66,7 +66,7 @@ async def get_tenant_from_jwt(credentials: HTTPAuthorizationCredentials = Securi
         
         # Cache Strategy
         cache_key = f"tenant:owner:{user_id}"
-        cached_tenant = redis_client.get(cache_key)
+        cached_tenant = await redis_client.get(cache_key)
         if cached_tenant: return cached_tenant
         
         # DB Lookup
@@ -77,7 +77,7 @@ async def get_tenant_from_jwt(credentials: HTTPAuthorizationCredentials = Securi
             raise HTTPException(status_code=403, detail="User has no associated tenant")
             
         tenant_id = res.data[0]['id']
-        redis_client.setex(cache_key, 300, tenant_id) # Cache 5 min
+        await redis_client.setex(cache_key, 300, tenant_id) # Cache 5 min
         
         return tenant_id
         
@@ -85,41 +85,15 @@ async def get_tenant_from_jwt(credentials: HTTPAuthorizationCredentials = Securi
         # Si Supabase falla validando el token
         raise HTTPException(status_code=401, detail="Invalid Session Token")
 
-# --- HELPER: Obtener Política Activa ---
-def get_active_policy(tenant_id: str):
-    """
-    Recupera la política activa. Cachea en Redis por 5 minutos.
-    """
-    cache_key = f"policy:active:{tenant_id}"
-    cached_policy = redis_client.get(cache_key)
-    
-    if cached_policy:
-        return json.loads(cached_policy)
 
-    # Fallback a DB
-    response = supabase.table("policies")\
-        .select("rules")\
-        .eq("tenant_id", tenant_id)\
-        .eq("is_active", True)\
-        .order("version", desc=True)\
-        .limit(1)\
-        .execute()
-
-    if not response.data:
-        return {"limits": {"monthly": 0, "per_request": 0}}
-
-    policy_rules = response.data[0]['rules']
-    redis_client.setex(cache_key, 300, json.dumps(policy_rules))
-    
-    return policy_rules
 
 # --- HELPER: Obtener Gasto Actual ---
-def get_current_spend(tenant_id: str, cost_center_id: str):
+async def get_current_spend(tenant_id: str, cost_center_id: str):
     """
     Lee de Redis (tiempo real). Si no existe, hidrata desde DB.
     """
     key = f"spend:{tenant_id}:{cost_center_id}"
-    spend = redis_client.get(key)
+    spend = await redis_client.get(key)
     
     if spend is not None:
         return float(spend)
@@ -133,7 +107,7 @@ def get_current_spend(tenant_id: str, cost_center_id: str):
         
     if response.data:
         val = float(response.data[0]['current_spend'])
-        redis_client.set(key, val)
+        await redis_client.set(key, val)
         return val
     
     return 0.0
@@ -149,8 +123,8 @@ async def authorize_transaction(
     tenant_id: str = Depends(get_tenant_from_header)
 ):
     # 0. Contexto
-    policy = get_active_policy(tenant_id)
-    current_spend = get_current_spend(tenant_id, req.cost_center_id)
+    policy = await get_active_policy(tenant_id)
+    current_spend = await get_current_spend(tenant_id, req.cost_center_id)
     
     # Check Panic Mode
     if policy.get("panic_mode", False):
@@ -180,7 +154,7 @@ async def authorize_transaction(
         input_qty = secs / 60.0 # Minutos
 
     # Calcular Coste Estimado
-    cost_estimated = estimator.estimate_cost(
+    cost_estimated = await estimator.estimate_cost(
         model=req.model,
         task_type=task_type,
         input_unit_count=input_qty,
@@ -269,7 +243,7 @@ async def authorize_transaction(
                 continue 
                 
             # 2. Predecir coste fallback (Estimador Multimodal)
-            f_cost_est = estimator.estimate_cost(
+            f_cost_est = await estimator.estimate_cost(
                 model=fallback_model,
                 task_type=task_type,
                 input_unit_count=input_qty,

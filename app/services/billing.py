@@ -1,6 +1,6 @@
 # app/services/billing.py
 from app.db import supabase, increment_spend, redis_client
-import json
+from app.utils import fast_json as json
 from app.logic import sign_receipt
 import logging
 
@@ -50,18 +50,23 @@ async def record_transaction(
         if "pii_sanitized" not in metadata:
             metadata["pii_sanitized"] = True
             
-        supabase.table("receipts").insert({
-            "tenant_id": tenant_id,
-            "cost_center_id": cost_center_id,
-            "cost_real": cost_real,
-            "signature": rx_signature,
-            "usage_data": metadata,
-            "authorization_id": auth_id,
-            "trace_id": trace_id,
-            "processed_in": region,
-            "cache_hit": cache_hit,
-            "tokens_saved": tokens_saved 
-        }).execute()
+        def _save_receipt():
+            return supabase.table("receipts").insert({
+                "tenant_id": tenant_id,
+                "cost_center_id": cost_center_id,
+                "cost_real": cost_real,
+                "signature": rx_signature,
+                "usage_data": metadata,
+                "authorization_id": auth_id,
+                "trace_id": trace_id,
+                "processed_in": region,
+                "cache_hit": cache_hit,
+                "tokens_saved": tokens_saved 
+            }).execute()
+
+        # Non-blocking execution
+        import asyncio
+        await asyncio.to_thread(_save_receipt)
     except Exception as e:
         logger.error(f"CRITICAL BILLING FAILURE: {e}")
         # Guardar en una lista de 'fallidos' en Redis para reprocesar luego
@@ -76,7 +81,7 @@ async def record_transaction(
             "error": str(e)
         }
         try:
-            redis_client.lpush("failed_receipts", json.dumps(failed_receipt))
+            await redis_client.lpush("failed_receipts", json.dumps(failed_receipt))
         except Exception as redis_e:
              logger.critical(f"🔥 CATASTROPHIC FAILURE: Could not save to DLQ either: {redis_e}")
         

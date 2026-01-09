@@ -1,6 +1,7 @@
 from litellm import model_cost
 from typing import Dict, Any
 from app.db import supabase, redis_client
+import json
 
 class MultimodalEstimator:
     """
@@ -25,7 +26,7 @@ class MultimodalEstimator:
             "DEFAULT": 2.0
         }
 
-    def _resolve_price(self, model: str) -> (float, float):
+    async def _resolve_price(self, model: str) -> (float, float):
         """
         Obtiene precio (in, out) de la fuente más fresca.
         Prioridad: Redis (Override) > LiteLLM (Oficial) > DB (Config Manual).
@@ -42,7 +43,7 @@ class MultimodalEstimator:
         # 2. Redis / DB (Overrides manuales del usuario)
         # Si LiteLLM falla o queremos un override, miramos nuestra DB.
         cache_key = f"price:{model}"
-        cached = redis_client.get(cache_key)
+        cached = await redis_client.get(cache_key)
         if cached:
              p_in, p_out = cached.split("|")
              return float(p_in), float(p_out)
@@ -53,12 +54,12 @@ class MultimodalEstimator:
             data = res.data[0]
             p_in = float(data['price_in'])
             p_out = float(data['price_out'])
-            redis_client.setex(cache_key, 86400, f"{p_in}|{p_out}")
+            await redis_client.setex(cache_key, 86400, f"{p_in}|{p_out}")
             return p_in, p_out
             
         return 0.0, 0.0
 
-    def estimate_cost(self, 
+    async def estimate_cost(self, 
                       model: str, 
                       task_type: str, 
                       input_unit_count: float, 
@@ -89,10 +90,10 @@ class MultimodalEstimator:
             price_key = f"{model}-{quality}" if quality == "hd" else model
             
             # Usamos price_in como "cost per unit"
-            unit_price, _ = self._resolve_price(price_key) 
+            unit_price, _ = await self._resolve_price(price_key) 
             if unit_price == 0: 
                  # Fallback a búsqueda directa del modelo base si la key compuesta falla
-                 unit_price, _ = self._resolve_price(model)
+                 unit_price, _ = await self._resolve_price(model)
             
             # input_unit_count aquí es número de imágenes
             num_images = max(1, int(input_unit_count)) 
@@ -100,22 +101,22 @@ class MultimodalEstimator:
 
         # --- CASO 2: AUDIO TRANSCRIPTION (Precio por Minuto) ---
         if "AUDIO_TRANSCRIPTION" in task_type or "WHISPER" in model:
-            price_per_min, _ = self._resolve_price("whisper-1") # Normalizamos key
-            if price_per_min == 0: price_per_min, _ = self._resolve_price(model)
+            price_per_min, _ = await self._resolve_price("whisper-1") # Normalizamos key
+            if price_per_min == 0: price_per_min, _ = await self._resolve_price(model)
             
             minutes = float(input_unit_count)
             return price_per_min * minutes
 
         # --- CASO 3: TEXT TO SPEECH (Precio por Caracter) ---
         if "AUDIO_SPEECH" in task_type or "TTS" in model:
-            price_per_char, _ = self._resolve_price("tts-1")
+            price_per_char, _ = await self._resolve_price("tts-1")
             
             chars = int(input_unit_count)
             return price_per_char * chars
 
         # --- CASO 4: TEXTO / VISIÓN ANALYSIS (Precio por Token) ---
         # Aquí usamos los Ratios de expansión
-        price_in, price_out = self._resolve_price(model)
+        price_in, price_out = await self._resolve_price(model)
         
         # Si todo falla, usar precios de seguridad (Worst Case GPT-4 level)
         if price_in == 0: price_in = 0.00001
@@ -134,7 +135,17 @@ class MultimodalEstimator:
         # Hard Cap (Límite Técnico del Modelo)
         est_output_tokens = min(est_output_tokens, 4000) 
 
-        total_cost = (input_unit_count * price_in) + (est_output_tokens * price_out)
-        return total_cost
+        total_cost_usd = (input_unit_count * price_in) + (est_output_tokens * price_out)
+        
+        # 5. CONVERSIÓN DE DIVISA (FOREX REAL)
+        # Obtenemos el tipo de cambio del Oráculo
+        try:
+            rules_json = await redis_client.get("system_config:arbitrage_rules")
+            rules = json.loads(rules_json) if rules_json else {}
+            rate = float(rules.get("exchange_rate", 0.92))
+        except:
+            rate = 0.92 # Fallback seguro
+            
+        return total_cost_usd * rate
 
 estimator = MultimodalEstimator()
