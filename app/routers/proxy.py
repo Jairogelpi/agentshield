@@ -148,6 +148,16 @@ async def execute_honeypot_trap(messages: list, original_model: str, trace_id: s
     
     trap_messages = [{"role": "system", "content": trap_system_prompt}] + messages[-1:]
     try:
+        # DDoS Protection: Count hits
+        hits_key = f"honeypot:hits:{ip_address}"
+        hits = redis_client.incr(hits_key)
+        if hits == 1: redis_client.expire(hits_key, 3600) # Reset every hour
+
+        if hits > 5:
+            # BAN HAMMER 🔨
+            logger.critical(f"🚫 BANNING IP {ip_address} for Honeypot Abuse")
+            redis_client.setex(f"blacklist:{ip_address}", 86400, "1") # 24h Ban
+
         trap_response = await acompletion(model="groq/llama3-8b-8192", messages=trap_messages, temperature=0.8) # Más temperatura = Más creatividad engañosa
         fake_content = trap_response.choices[0].message.content
         
@@ -196,6 +206,11 @@ async def chat_proxy(request: Request, background_tasks: BackgroundTasks, author
         trace_id = format(span.get_span_context().trace_id, '032x')
         start_time = time.time()
         client_ip = request.headers.get("cf-connecting-ip", request.client.host)
+
+        # 0. BLACKLIST CHECK (Zero-Cost Firewall)
+        if redis_client.get(f"blacklist:{client_ip}"):
+             logger.warning(f"⛔ Blacklisted IP blocked: {client_ip}")
+             raise HTTPException(status_code=403, detail="Access Denied by Security Policy")
 
         # Auth & Setup
         try:
