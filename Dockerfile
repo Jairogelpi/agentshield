@@ -32,7 +32,7 @@ COPY requirements.txt .
 RUN uv pip install --system --compile-bytecode \
     --extra-index-url https://download.pytorch.org/whl/cpu \
     -r requirements.txt \
-    target/wheels/*.whl
+    rust_module/target/wheels/*.whl
 
 # Descarga de modelos (Solo Embeddings ya que PII ahora es API/Rust)
 RUN mkdir -p /app/model_cache && \
