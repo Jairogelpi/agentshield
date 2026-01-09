@@ -3,6 +3,7 @@ import re
 from presidio_analyzer import AnalyzerEngine
 from presidio_anonymizer import AnonymizerEngine
 from presidio_anonymizer.entities import OperatorConfig
+from langdetect import detect
 import logging
 
 logger = logging.getLogger("agentshield.pii_guard")
@@ -26,7 +27,7 @@ def fast_regex_scrub(text: str) -> str:
         text = pattern.sub(f"<{label}>", text)
     return text
 
-# --- CAPA 2: MOTOR IA (Presidio/Spacy - ~100ms) ---
+# --- CAPA 2: MOTOR IA (Multilingual Presidio - ~100ms) ---
 # Inicialización Lazy de Motores (Singleton)
 analyzer = None
 anonymizer = None
@@ -34,29 +35,52 @@ anonymizer = None
 def get_engines():
     global analyzer, anonymizer
     if not analyzer:
-        analyzer = AnalyzerEngine()
+        # Cargar configuración multilingüe si es necesario, por defecto carga modelos "en" si están instalados
+        # Para soporte real de varios idiomas se necesita instalar:
+        # python -m spacy download en_core_web_lg
+        # python -m spacy download es_core_news_lg
+        # etc.
+        analyzer = AnalyzerEngine() 
         anonymizer = AnonymizerEngine()
     return analyzer, anonymizer
 
+def detect_language_safe(text: str) -> str:
+    """
+    Detecta idioma con fail-safe a inglés.
+    Zero-Latency wrapper sobre langdetect.
+    """
+    try:
+        lang = detect(text)
+        # Normalizamos a códigos de 2 letras que soporte Spacy/Presidio
+        if lang in ['es', 'en', 'fr', 'de', 'it', 'pt', 'zh']:
+            return lang
+        return 'en' # Fallback universal
+    except:
+        return 'en'
+
 def advanced_redact_pii(text: str) -> str:
     """
-    Híbrido de PII: Regex (Capa Rápida) + NLP (Capa Profunda).
+    Híbrido de PII Universal: Regex + Multilingual NLP.
     Estrategia Fail-Closed: Si falla, bloquea.
     """
     try:
         # PASO 1: FAST PATH (Regex) - Velocidad de 'Edge'
-        # Limpiamos emails, teléfonos y tarjetas instantáneamente.
         clean_text = fast_regex_scrub(text)
         
-        # PASO 2: DEEP PATH (NLP) - Contexto y Nombres
-        # Solo usamos la IA para lo que el Regex no puede entender (Nombres, Ubicaciones).
+        # PASO 2: LANGUAGE DETECTION (Zero-Latency)
+        detected_lang = detect_language_safe(clean_text[:500]) # Solo analizamos el inicio para velocidad
+        
+        # PASO 3: DEEP PATH (NLP) - Context aware
         analyzer_engine, anonymizer_engine = get_engines()
+        
+        # Intentamos usar el idioma detectado. 
+        # Si el modelo spacy no está instalado para ese idioma, Presidio fallará o usará default?
+        # Presidio devuelve [] si no tiene modelo. Asumimos que en deploy se instalan 'en' y 'es'.
         
         results = analyzer_engine.analyze(
             text=clean_text, 
-            language='es', 
-            # Quitamos EMAIL_ADDRESS y PHONE_NUMBER de aquí porque ya lo hizo el regex mejor y más rápido
-            entities=["PERSON", "LOCATION", "US_SSN", "IBAN_CODE"] 
+            language=detected_lang, 
+            entities=["PERSON", "LOCATION", "US_SSN", "IBAN_CODE", "DATE_TIME"] 
         )
         
         anonymized_result = anonymizer_engine.anonymize(

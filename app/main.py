@@ -83,7 +83,28 @@ def setup_observability(app):
     except Exception as e:
         logger.error(f"Grafana/OTEL Init Error: {e}")
 
-app = FastAPI(title="AgentShield API", version="1.0.0")
+from contextlib import asynccontextmanager
+from app.db import recover_pending_charges
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- STARTUP ---
+    logger.info("🚀 AgentShield Core Starting...")
+    
+    # 1. Recuperación de Cobros (WAL Recovery)
+    try:
+        import threading
+        recovery_thread = threading.Thread(target=recover_pending_charges)
+        recovery_thread.start()
+    except Exception as e:
+        logger.critical(f"Failed to start Recovery Worker: {e}")
+        
+    yield 
+    
+    # --- SHUTDOWN ---
+    logger.info("🛑 AgentShield Core Shutting Down...")
+
+app = FastAPI(title="AgentShield API", version="1.0.0", lifespan=lifespan)
 
 # Setup Observability (OTEL + Grafana)
 setup_observability(app)

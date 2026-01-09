@@ -15,6 +15,10 @@ opentelemetry-sdk
 opentelemetry-exporter-otlp
 opentelemetry-instrumentation-fastapi
 logtail-python
+Pillow
+piexif
+cryptography
+langdetect
 sentry_sdk
 redis==4.6.0
 numpy
