@@ -6,17 +6,40 @@ use lazy_static::lazy_static;
 use std::io::Write;
 use crc32fast::Hasher as Crc32;
 
-// ... (Regex stuff remains same)
+/// Escanea texto ultra-rápido buscando PII.
+#[pyfunction]
+pub fn scan_pii_fast(text: &str) -> Vec<String> {
+    let mut findings = Vec::with_capacity(4);
+    
+    // Check de bajo nivel sin allocar memoria extra
+    if EMAIL_RE.is_match(text) { findings.push("EMAIL".to_string()); }
+    if PHONE_RE.is_match(text) { findings.push("PHONE".to_string()); }
+    if IP_RE.is_match(text) { findings.push("IP_ADDRESS".to_string()); }
+    if CC_RE.is_match(text) { findings.push("CREDIT_CARD".to_string()); }
+    
+    findings
+}
+
+/// Función de reemplazo rápido (Opción B: Scrubbing directo en Rust)
+#[pyfunction]
+pub fn scrub_pii_fast(text: &str) -> String {
+    let mut clean = text.to_string();
+    clean = EMAIL_RE.replace_all(&clean, "<EMAIL>").to_string();
+    clean = PHONE_RE.replace_all(&clean, "<PHONE>").to_string();
+    clean = IP_RE.replace_all(&clean, "<IP_ADDRESS>").to_string();
+    clean = CC_RE.replace_all(&clean, "<CREDIT_CARD>").to_string();
+    clean
+}
 
 // --- 2. ZERO-COPY IMAGE SIGNING (C2PA - Manual Binary Injection) ---
 #[pyfunction]
-fn sign_c2pa_image_fast(
+pub fn sign_c2pa_image_fast(
     py: Python<'_>, 
     image_bytes: &[u8], 
     private_key_pem: &str, 
     manifest_json: &str
 ) -> PyResult<PyObject> {
-
+// ... existing impl remains same ...
     // A. Firma Criptográfica
     // Use Fully Qualified syntax to avoid trait confusion
     use rsa::pkcs8::DecodePrivateKey;
@@ -105,11 +128,10 @@ fn sign_c2pa_image_fast(
 }
 
 /// El módulo Python
-/// El módulo Python
 #[pymodule]
 fn agentshield_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(sign_c2pa_image_fast)?)?;
-    m.add_function(wrap_pyfunction!(scan_pii_fast)?)?;
-    m.add_function(wrap_pyfunction!(scrub_pii_fast)?)?;
+    m.add_function(wrap_pyfunction!(sign_c2pa_image_fast, m)?)?;
+    m.add_function(wrap_pyfunction!(scan_pii_fast, m)?)?;
+    m.add_function(wrap_pyfunction!(scrub_pii_fast, m)?)?;
     Ok(())
 }
