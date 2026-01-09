@@ -1,9 +1,6 @@
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
-use rsa::{RsaPrivateKey, Pkcs1v15Sign};
-use rsa::pkcs8::DecodePrivateKey;
-use sha2::{Sha256, Digest};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+// Imports Cleaned
 use regex::Regex;
 use lazy_static::lazy_static;
 use std::io::Write;
@@ -21,6 +18,12 @@ fn sign_c2pa_image_fast(
 ) -> PyResult<PyObject> {
 
     // A. Firma Criptográfica
+    // Use Fully Qualified syntax to avoid trait confusion
+    use rsa::pkcs8::DecodePrivateKey;
+    use rsa::{RsaPrivateKey, Pkcs1v15Sign};
+    use sha2::{Sha256, Digest};
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+
     let private_key = RsaPrivateKey::from_pkcs8_pem(private_key_pem)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Invalid Key: {}", e)))?;
 
@@ -28,6 +31,7 @@ fn sign_c2pa_image_fast(
     hasher.update(manifest_json.as_bytes());
     let hashed = hasher.finalize();
 
+    // Explicitly cast traits if needed, but standard usage should work.
     let signature = private_key.sign(Pkcs1v15Sign::new::<Sha256>(), &hashed)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Signing failed: {}", e)))?;
     
