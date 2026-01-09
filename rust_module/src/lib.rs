@@ -6,6 +6,15 @@ use lazy_static::lazy_static;
 use std::io::Write;
 use crc32fast::Hasher as Crc32;
 
+// --- 1. RUST REGEX ENGINE (PII GUARD) ---
+// Autómatas DFA pre-compilados. Velocidad O(n).
+lazy_static! {
+    static ref EMAIL_RE: Regex = Regex::new(r"(?i)\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b").unwrap();
+    static ref PHONE_RE: Regex = Regex::new(r"\+(9[976]\d|8[987530]\d|6[987]\d|5[90]\d|42\d|3[875]\d|2[98654321]\d|9[8543210]|8[6421]|6[6543210]|5[87654321]|4[987654310]|3[9643210]|2[70]|7|1)\d{1,14}").unwrap();
+    static ref IP_RE: Regex = Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").unwrap();
+    static ref CC_RE: Regex = Regex::new(r"\b(?:\d{4}[- ]?){3}\d{4}\b").unwrap();
+}
+
 /// Escanea texto ultra-rápido buscando PII.
 #[pyfunction]
 pub fn scan_pii_fast(text: &str) -> Vec<String> {
