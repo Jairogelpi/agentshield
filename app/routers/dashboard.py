@@ -1,9 +1,10 @@
+# agentshield_core/app/routers/dashboard.py
 from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from typing import Optional, List, Dict, Any
 from app.db import supabase, redis_client
-from app.db import supabase, redis_client
-from app.routers.authorize import get_tenant_from_jwt as get_current_tenant_id # Alias for safely
+from app.routers.authorize import get_tenant_from_jwt as get_current_tenant_id
 import json
+import os
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 import io
@@ -11,20 +12,17 @@ import csv
 import secrets
 import hashlib
 from app.services.pricing_sync import sync_prices_from_openrouter
-from opentelemetry import trace # Observabilidad permanente
+from opentelemetry import trace
 
 tracer = trace.get_tracer(__name__)
 
 router = APIRouter(prefix="/v1/dashboard", tags=["Dashboard"])
 
-# Helper rápido para política (si no quieres refactorizar authorize.py)
+# Helper rápido para política
 def get_policy_rules(tenant_id: str):
-    # Intentar caché
     cache_key = f"policy:active:{tenant_id}"
     cached = redis_client.get(cache_key)
     if cached: return json.loads(cached)
-    
-    # DB fallback
     res = supabase.table("policies").select("rules").eq("tenant_id", tenant_id).eq("is_active", True).execute()
     if res.data: return res.data[0]['rules']
     return {}
@@ -34,24 +32,15 @@ async def get_summary(
     tenant_id: str = Depends(get_current_tenant_id),
     cost_center_id: Optional[str] = Query(None, description="Filtrar por centro de coste específico")
 ):
-    # Lógica Dinámica:
-    # Si viene cost_center, damos detalle. Si no, damos TOTAL de la empresa.
-    
     current_spend = 0.0
-    
     if cost_center_id:
         spend_key = f"spend:{tenant_id}:{cost_center_id}"
         current_spend = float(redis_client.get(spend_key) or 0.0)
     else:
-        # Calcular TOTAL (Sumar todos los cost centers)
-        # 1. Intentar key de "total_spend" en Redis si la tuvieras
-        # 2. O consultar DB (Source of Truth) para sumar todos
         res = supabase.table("cost_centers").select("current_spend").eq("tenant_id", tenant_id).execute()
         if res.data:
             current_spend = sum(float(item['current_spend']) for item in res.data)
             
-    # Leer límite (La política define el límite Global o del CC?)
-    # Asumimos que la política define el límite MENSUAL GLOBAL del Tenant.
     policy = get_policy_rules(tenant_id)
     monthly_limit = policy.get("limits", {}).get("monthly", 0)
     
@@ -64,8 +53,6 @@ async def get_summary(
 
 @router.get("/receipts")
 async def get_receipts(tenant_id: str = Depends(get_current_tenant_id)):
-    # Traer últimos 10 recibos
-    # Seleccionamos campos específicos, excluyendo la firma criptográfica 'signature'
     res = supabase.table("receipts") \
         .select("id, created_at, cost_real, cost_center_id, cache_hit, tokens_saved") \
         .eq("tenant_id", tenant_id) \
@@ -73,117 +60,64 @@ async def get_receipts(tenant_id: str = Depends(get_current_tenant_id)):
         .limit(10) \
         .execute()
     return res.data
-    return res.data
-
-# --- SaaS Control Endpoints ---
 
 class UpdatePolicyRequest(BaseModel):
     rules: Dict[str, Any]
 
 @router.get("/policy")
 async def get_policy_config(tenant_id: str = Depends(get_current_tenant_id)):
-    """Devuelve la configuración JSON completa para pre-llenar el formulario del UI."""
-    # Reutilizamos tu helper get_policy_rules o leemos directo de DB
     res = supabase.table("policies").select("rules, mode").eq("tenant_id", tenant_id).eq("is_active", True).single().execute()
-    
     if not res.data:
-        # Política por defecto si es nueva cuenta
-        return {
-            "mode": "active",
-            "limits": {"monthly": 0, "per_request": 0},
-            "allowlist": {"models": []},
-            "governance": {"require_approval_above_cost": 0}
-        }
-        
+        return {"mode": "active", "limits": {"monthly": 0, "per_request": 0}, "allowlist": {"models": []}, "governance": {"require_approval_above_cost": 0}}
     rules = res.data['rules']
-    # Mezclamos el campo 'mode' que a veces está fuera del JSON de reglas
     rules['mode'] = res.data.get('mode', 'active') 
     return rules
 
 @router.put("/policy")
-async def update_policy(
-    update_req: UpdatePolicyRequest, 
-    tenant_id: str = Depends(get_current_tenant_id)
-):
-    """
-    Permite al cliente cambiar sus límites (autonomía).
-    """
-    # 1. Actualizar en Base de Datos (Source of Truth)
-    supabase.table("policies")\
-        .update({"rules": update_req.rules})\
-        .eq("tenant_id", tenant_id)\
-        .eq("is_active", True)\
-        .execute()
-        
-    # 2. CRÍTICO: Invalidar Caché de Redis
+async def update_policy(update_req: UpdatePolicyRequest, tenant_id: str = Depends(get_current_tenant_id)):
+    supabase.table("policies").update({"rules": update_req.rules}).eq("tenant_id", tenant_id).eq("is_active", True).execute()
     redis_client.delete(f"policy:active:{tenant_id}")
-    
     return {"status": "updated", "message": "Policy cache cleared and DB updated."}
 
 class UpdateWebhookRequest(BaseModel):
     url: str
-    events: List[str] = ["authorization.denied"] # Eventos por defecto
+    events: List[str] = ["authorization.denied"]
 
 @router.put("/webhook")
-async def update_webhook(
-    req: UpdateWebhookRequest,
-    tenant_id: str = Depends(get_current_tenant_id)
-):
-    """
-    Configura la URL para recibir alertas en tiempo real.
-    """
-    # Upsert (Insertar o Actualizar) la configuración del webhook
-    # Requiere que la tabla 'webhooks' tenga una restricción UNIQUE en tenant_id
+async def update_webhook(req: UpdateWebhookRequest, tenant_id: str = Depends(get_current_tenant_id)):
     supabase.table("webhooks").upsert({
-        "tenant_id": tenant_id,
-        "url": req.url,
-        "events": req.events,
-        "is_active": True,
-        "updated_at": "now()"
+        "tenant_id": tenant_id, "url": req.url, "events": req.events, "is_active": True, "updated_at": "now()"
     }, on_conflict="tenant_id").execute()
-    
     return {"status": "updated", "message": "Webhook configuration saved."}
 
-# --- Enterprise Control Endpoints ---
-
+# --- ADMIN ENDPOINT (CORREGIDO) ---
 @router.post("/admin/sync-prices")
-async def trigger_price_sync(
-    x_admin_secret: str = Header(None)
-):
+async def trigger_price_sync(x_admin_secret: str = Header(None)):
     """
-    Endpoint de mantenimiento para actualizar precios desde OpenRouter.
+    Endpoint de mantenimiento. AHORA PROTEGIDO.
     """
+    # 1. Verificar Seguridad
+    env_secret = os.getenv("ADMIN_SECRET_KEY")
+    if not env_secret or x_admin_secret != env_secret:
+        raise HTTPException(status_code=403, detail="Unauthorized Admin Access")
+
+    # 2. Ejecutar
     result = await sync_prices_from_openrouter()
     return result
 
-# --- BUSINESS LOGIC (MARGINS & AUDITS) ---
-
 @router.get("/analytics/profitability")
-async def get_profitability_report(
-    tenant_id: str = Depends(get_current_tenant_id),
-    start_date: Optional[str] = Query(None), # YYYY-MM-DD
-    end_date: Optional[str] = Query(None)
-):
-    """
-    Versión Optimizada: Delegación total a la DB vía RPC.
-    Capaz de procesar millones de registros en milisegundos.
-    """
+async def get_profitability_report(tenant_id: str = Depends(get_current_tenant_id), start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None)):
     try:
-        # Llamamos a la función SQL que creamos arriba
         rpc_params = {
             "p_tenant_id": tenant_id,
             "p_start_date": f"{start_date}T00:00:00" if start_date else None,
             "p_end_date": f"{end_date}T23:59:59" if end_date else None
         }
-        
         res = supabase.rpc("get_tenant_profitability", rpc_params).execute()
         data = res.data
-
-        # Agregamos los totales globales
         total_cost = sum(item['total_cost'] for item in data)
         total_billable = sum(item['total_billable'] for item in data)
         gross_margin = total_billable - total_cost
-        
         return {
             "period": {"start": start_date, "end": end_date},
             "financials": {
@@ -192,213 +126,84 @@ async def get_profitability_report(
                 "gross_margin_value": round(gross_margin, 4),
                 "gross_margin_percent": round((gross_margin / total_billable * 100), 2) if total_billable > 0 else 0
             },
-            "breakdown_by_project": {
-                item['cost_center_id']: {
-                    "cost": round(item['total_cost'], 4),
-                    "billable": round(item['total_billable'], 4),
-                    "margin": round(item['margin_value'], 4)
-                } for item in data
-            }
+            "breakdown_by_project": {item['cost_center_id']: {"cost": round(item['total_cost'], 4), "billable": round(item['total_billable'], 4), "margin": round(item['margin_value'], 4)} for item in data}
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error en reporte: {str(e)}")
 
 @router.get("/analytics/history")
-async def get_spending_history(
-    tenant_id: str = Depends(get_current_tenant_id),
-    days: int = 30
-):
-    """Devuelve datos agregados por día para pintar el gráfico principal."""
+async def get_spending_history(tenant_id: str = Depends(get_current_tenant_id), days: int = 30):
     import datetime
-    
-    # Calcular fecha de corte
     cutoff = (datetime.datetime.utcnow() - datetime.timedelta(days=days)).isoformat()
-    
     res = supabase.table("receipts").select("created_at, cost_real").eq("tenant_id", tenant_id).gte("created_at", cutoff).execute()
-    
-    # Agregación en memoria (Rápida en Python para volúmenes medios)
     daily_stats = {}
-    
     for r in res.data:
-        day = r['created_at'][:10] # YYYY-MM-DD
+        day = r['created_at'][:10]
         daily_stats[day] = daily_stats.get(day, 0.0) + float(r['cost_real'])
-        
-    # Formato lista ordenada para Recharts/Chart.js
     chart_data = [{"date": k, "amount": round(v, 4)} for k, v in sorted(daily_stats.items())]
-    
     return chart_data
 
 @router.get("/reports/audit", response_class=StreamingResponse)
-async def download_dispute_pack(
-    tenant_id: str = Depends(get_current_tenant_id),
-    month: str = Query(None)
-):
-    """
-    Genera el 'Dispute Pack' con evidencia criptográfica REAL para validez legal.
-    """
+async def download_dispute_pack(tenant_id: str = Depends(get_current_tenant_id), month: str = Query(None)):
     with tracer.start_as_current_span("export_dispute_pack") as span:
         span.set_attribute("tenant.id", tenant_id)
-        
-        # 1. Consultar todos los campos, incluyendo la firma REAL y la región
         query = supabase.table("receipts").select("created_at, cost_center_id, usage_data, cost_real, signature, processed_in").eq("tenant_id", tenant_id)
-        
         data = query.execute().data
-        span.set_attribute("audit.records_exported", len(data))
-        
         output = io.StringIO()
         writer = csv.writer(output)
-        
-        # Header profesional para auditoría
         writer.writerow(["Date", "Project", "Model", "Cost (EUR)", "Region", "Cryptographic Proof (JWS Signature)"])
-        
         for r in data:
             meta = r.get("usage_data") or {}
-            
-            # 2. Insertar la firma real que se generó en billing.py
-            writer.writerow([
-                r.get("created_at"),
-                r.get("cost_center_id"),
-                meta.get("model", "N/A"),
-                f"{r.get('cost_real', 0):.6f}",
-                r.get("processed_in", "eu"),
-                r.get("signature") # <--- SOLUCIONADO: Ya no es texto estático
-            ])
-            
+            writer.writerow([r.get("created_at"), r.get("cost_center_id"), meta.get("model", "N/A"), f"{r.get('cost_real', 0):.6f}", r.get("processed_in", "eu"), r.get("signature")])
         output.seek(0)
-        
-        response = StreamingResponse(
-            iter([output.getvalue()]),
-            media_type="text/csv"
-        )
-        response.headers["Content-Disposition"] = "attachment; filename=agentshield_audit_pack.csv"
-        return response
+        return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=agentshield_audit_pack.csv"})
 
 @router.post("/emergency/stop")
 async def kill_switch(tenant_id: str = Depends(get_current_tenant_id)):
-    """
-    Botón del Pánico: Detiene todo el tráfico de IA inmediatamente.
-    """
-    # Sobrescribimos la política activa con límites a CERO
-    panic_rules = {
-        "limits": {"monthly": 0, "per_request": 0},
-        "allowlist": {"providers": [], "models": []},
-        "panic_mode": True
-    }
-    
-    # 1. Actualizar DB
-    try:
-        supabase.table("policies").update({"rules": panic_rules}).eq("tenant_id", tenant_id).eq("is_active", True).execute()
-    except Exception as e:
-        # Si falla DB, intentar Redis (que es lo critico)
-        pass
-
-    # 2. Borrar Caché (Efecto inmediato)
+    panic_rules = {"limits": {"monthly": 0, "per_request": 0}, "allowlist": {"providers": [], "models": []}, "panic_mode": True}
+    try: supabase.table("policies").update({"rules": panic_rules}).eq("tenant_id", tenant_id).eq("is_active", True).execute()
+    except Exception: pass
     redis_client.delete(f"policy:active:{tenant_id}")
-    # También forzar un flag de bloqueo
     redis_client.set(f"kill_switch:{tenant_id}", "block", ex=3600*24)
-    
-    return {"status": "STOPPED", "message": "EMERGENCY STOP ACTIVATED. All requests will be denied."}
+    return {"status": "STOPPED", "message": "EMERGENCY STOP ACTIVATED."}
 
 @router.get("/export/csv")
 async def export_receipts_csv(tenant_id: str = Depends(get_current_tenant_id)):
-    """
-    Genera un CSV descargable con todas las transacciones.
-    """
-    # Obtener datos (Limitado a 1000 para MVP)
     res = supabase.table("receipts").select("*").eq("tenant_id", tenant_id).order("created_at", desc=True).limit(1000).execute()
-    data = res.data
-    
-    # Crear CSV en memoria
     output = io.StringIO()
     writer = csv.writer(output)
-    
-    # Cabeceras
     writer.writerow(["Receipt ID", "Date", "Cost Center", "Provider", "Model", "Cost (EUR)", "Status"])
-    
-    # Filas
-    for row in data:
-        # Extraer metadatos de JSON si es necesario
-        # Safely get nested dicts
+    for row in res.data:
         usage = row.get("usage_data") or {}
-        if isinstance(usage, str): # En caso de que venga como string JSON
+        if isinstance(usage, str): 
              try: usage = json.loads(usage)
              except: usage = {}
-             
-        model = usage.get("model", "unknown")
-        provider = usage.get("provider", "unknown")
-        
-        writer.writerow([
-            row.get("id"),
-            row.get("created_at"),
-            row.get("cost_center_id"),
-            provider,
-            model,
-            row.get("cost_real"),
-            "VERIFIED"
-        ])
-    
+        writer.writerow([row.get("id"), row.get("created_at"), row.get("cost_center_id"), usage.get("provider", "unknown"), usage.get("model", "unknown"), row.get("cost_real"), "VERIFIED"])
     output.seek(0)
-    
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=agentshield_report.csv"}
-    )
+    return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=agentshield_report.csv"})
 
 @router.post("/keys/rotate")
-async def rotate_api_key(
-    tenant_id: str = Depends(get_current_tenant_id)
-):
-    # 1. Generar nueva key
+async def rotate_api_key(tenant_id: str = Depends(get_current_tenant_id)):
     raw_key = f"sk_live_{secrets.token_urlsafe(32)}"
-    
-    # 2. Hashear para guardar
     hashed = hashlib.sha256(raw_key.encode()).hexdigest()
-    
-    # 3. Update DB
     supabase.table("tenants").update({"api_key_hash": hashed}).eq("id", tenant_id).execute()
-    
-    return {
-        "new_api_key": raw_key,
-        "message": "Copy this key NOW. You won't see it again."
-    }
+    return {"new_api_key": raw_key, "message": "Copy this key NOW."}
 
 @router.get("/analytics/top-spenders")
 async def get_top_spenders(tenant_id: str = Depends(get_current_tenant_id)):
-    """
-    Desglosa el gasto por Modelo. 
-    Ayuda al cliente a saber quién se está comiendo el presupuesto.
-    """
-    # Simulación para MVP (en producción usa SQL Group By con RPC)
-    # Traemos últimos 500 recibos para hacer estadística rápida
     receipts = supabase.table("receipts").select("usage_data, cost_real").eq("tenant_id", tenant_id).limit(500).execute()
-    
     by_model = {}
-    total_analyzed = 0.0
-    
+    total = 0.0
     for r in receipts.data:
-        # Extraer metadatos de forma segura
         usage = r.get("usage_data") or {}
         if isinstance(usage, str): 
              try: usage = json.loads(usage)
              except: usage = {}
-             
         model = usage.get("model", "unknown")
         cost = r.get("cost_real", 0.0)
-        
         by_model[model] = by_model.get(model, 0) + cost
-        total_analyzed += cost
-        
-    # Ordenar por gasto (Mayor a menor)
-    sorted_models = dict(sorted(by_model.items(), key=lambda item: item[1], reverse=True))
-        
-    return {
-        "by_model": sorted_models,
-        "sample_size": len(receipts.data),
-        "total_in_sample": total_analyzed
-    }
-
-# --- COST CENTER MANAGEMENT (COMPLETE) ---
+        total += cost
+    return {"by_model": dict(sorted(by_model.items(), key=lambda x: x[1], reverse=True)), "sample_size": len(receipts.data), "total_in_sample": total}
 
 class CostCenterConfig(BaseModel):
     name: str
@@ -409,64 +214,29 @@ class CostCenterConfig(BaseModel):
 
 @router.get("/cost-centers")
 async def list_cost_centers(tenant_id: str = Depends(get_current_tenant_id)):
-    """Lista todos los proyectos y su configuración actual."""
-    res = supabase.table("cost_centers").select("*").eq("tenant_id", tenant_id).execute()
-    return res.data
+    return supabase.table("cost_centers").select("*").eq("tenant_id", tenant_id).execute().data
 
 @router.post("/cost-centers")
-async def create_cost_center(
-    config: CostCenterConfig, 
-    tenant_id: str = Depends(get_current_tenant_id)
-):
-    """Crea un nuevo proyecto (ej: 'Marketing Coca-Cola') con sus reglas."""
-    # Nota: El ID se autogenera gracias al patch SQL que aplicamos
-    data = {
-        "tenant_id": tenant_id,
-        "name": config.name,
-        "markup": config.markup,
-        "monthly_limit": config.monthly_limit,
-        "is_billable": config.is_billable,
-        "hard_limit_daily": config.hard_limit_daily
-    }
+async def create_cost_center(config: CostCenterConfig, tenant_id: str = Depends(get_current_tenant_id)):
+    data = {"tenant_id": tenant_id, "name": config.name, "markup": config.markup, "monthly_limit": config.monthly_limit, "is_billable": config.is_billable, "hard_limit_daily": config.hard_limit_daily}
     try:
         res = supabase.table("cost_centers").insert(data).execute()
         return {"status": "created", "data": res.data[0]}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error creating Cost Center: {str(e)}")
+    except Exception as e: raise HTTPException(status_code=400, detail=str(e))
 
 @router.put("/cost-centers/{cc_id}")
-async def update_cost_center(
-    cc_id: str, 
-    config: CostCenterConfig, 
-    tenant_id: str = Depends(get_current_tenant_id)
-):
-    """Edita las reglas de facturación de un proyecto en tiempo real."""
-    data = {
-        "name": config.name,
-        "markup": config.markup,
-        "monthly_limit": config.monthly_limit,
-        "is_billable": config.is_billable,
-        "hard_limit_daily": config.hard_limit_daily
-    }
-    
-    # Actualizar DB
+async def update_cost_center(cc_id: str, config: CostCenterConfig, tenant_id: str = Depends(get_current_tenant_id)):
+    data = {"name": config.name, "markup": config.markup, "monthly_limit": config.monthly_limit, "is_billable": config.is_billable, "hard_limit_daily": config.hard_limit_daily}
     supabase.table("cost_centers").update(data).eq("id", cc_id).eq("tenant_id", tenant_id).execute()
-    
-    # CRÍTICO: Invalidar Caché de Gasto para que el nuevo límite aplique ya
     redis_client.delete(f"spend:{tenant_id}:{cc_id}")
-    
     return {"status": "updated", "message": "Project configuration updated"}
 
 @router.delete("/cost-centers/{cc_id}")
 async def delete_cost_center(cc_id: str, tenant_id: str = Depends(get_current_tenant_id)):
-    """Elimina un proyecto (Solo si no tiene recibos asociados por FK constraints)."""
     try:
         supabase.table("cost_centers").delete().eq("id", cc_id).eq("tenant_id", tenant_id).execute()
         return {"status": "deleted"}
-    except Exception:
-        raise HTTPException(status_code=400, detail="Cannot delete project with active receipts. Archive it instead.")
-
-# --- TENANT SETTINGS (NEW) ---
+    except: raise HTTPException(status_code=400, detail="Cannot delete project with active receipts.")
 
 class TenantSettings(BaseModel):
     name: Optional[str] = None
@@ -475,175 +245,56 @@ class TenantSettings(BaseModel):
 
 @router.get("/settings")
 async def get_tenant_settings(tenant_id: str = Depends(get_current_tenant_id)):
-    """Ver configuración global de la agencia."""
     res = supabase.table("tenants").select("name, default_markup, is_active, created_at").eq("id", tenant_id).single().execute()
     return res.data
 
 @router.put("/settings")
-async def update_tenant_settings(
-    settings: TenantSettings, 
-    tenant_id: str = Depends(get_current_tenant_id)
-):
-    """Cambiar el nombre de la agencia o su margen por defecto."""
-    updates = {}
-    if settings.name is not None: updates["name"] = settings.name
-    if settings.default_markup is not None: updates["default_markup"] = settings.default_markup
-    # is_active no lo dejamos cambiar aquí para que no se auto-bloqueen por error
-    
-    if not updates:
-        return {"status": "no_changes"}
-
+async def update_tenant_settings(settings: TenantSettings, tenant_id: str = Depends(get_current_tenant_id)):
+    updates = {k: v for k, v in settings.dict().items() if v is not None}
+    if not updates: return {"status": "no_changes"}
     supabase.table("tenants").update(updates).eq("id", tenant_id).execute()
-    
     return {"status": "updated", "data": updates}
 
-# --- HUMAN-IN-THE-LOOP (APPROVALS) ---
-
 class ApprovalDecision(BaseModel):
-    decision: str # APPROVED, DENIED
+    decision: str
     reason: Optional[str] = None
 
 @router.get("/approvals")
 async def list_pending_approvals(tenant_id: str = Depends(get_current_tenant_id)):
-    """Lista solicitudes que requieren aprobación humana."""
-    res = supabase.table("authorizations")\
-        .select("*")\
-        .eq("tenant_id", tenant_id)\
-        .eq("decision", "PENDING_APPROVAL")\
-        .order("created_at", desc=True)\
-        .execute()
+    res = supabase.table("authorizations").select("*").eq("tenant_id", tenant_id).eq("decision", "PENDING_APPROVAL").order("created_at", desc=True).execute()
     return res.data
 
 @router.post("/approvals/{auth_id}/decision")
-async def resolve_approval(
-    auth_id: str, 
-    decision_body: ApprovalDecision,
-    tenant_id: str = Depends(get_current_tenant_id)
-):
-    """
-    El Manager aprueba o rechaza la solicitud.
-    Si APRUEBA, el agente (que está haciendo polling) verá el cambio y continuará.
-    """
-    if decision_body.decision not in ["APPROVED", "DENIED"]:
-        raise HTTPException(status_code=400, detail="Decision must be APPROVED or DENIED")
-        
-    res = supabase.table("authorizations").update({
-        "decision": decision_body.decision,
-        "reason_code": decision_body.reason or f"Manual decision by Manager",
-        # Opcional: guardar ID del manager que aprobó si lo tuviéramos
-    }).eq("id", auth_id).eq("tenant_id", tenant_id).execute()
-    
+async def resolve_approval(auth_id: str, decision_body: ApprovalDecision, tenant_id: str = Depends(get_current_tenant_id)):
+    if decision_body.decision not in ["APPROVED", "DENIED"]: raise HTTPException(status_code=400, detail="Invalid Decision")
+    res = supabase.table("authorizations").update({"decision": decision_body.decision, "reason_code": decision_body.reason or "Manual decision"}).eq("id", auth_id).eq("tenant_id", tenant_id).execute()
     return {"status": "resolved", "data": res.data}
 
-# --- CUSTOM PRICING (NEW) ---
-
 class CustomPrice(BaseModel):
-    model_name: str # Ej: "scraper-v1" o "my-local-llama"
-    price_per_unit: float # Ej: 0.002
-    unit_type: str = "request" # request, token, minute
+    model_name: str
+    price_per_unit: float
+    unit_type: str = "request"
 
 @router.post("/prices/custom")
-async def set_custom_price(
-    price: CustomPrice,
-    tenant_id: str = Depends(get_current_tenant_id)
-):
-    """Permite a la agencia definir costes para herramientas que no son LLMs públicos."""
-    # Guardamos esto en la tabla model_prices
-    # OJO: Para evitar colisiones con precios oficiales, podemos usar un prefijo o un provider custom.
-    
-    data = {
-        "provider": f"custom-{tenant_id}", # Namespace seguro por tenant
-        "model": price.model_name,
-        "price_in": price.price_per_unit, # Usamos price_in como precio base unitario
-        "price_out": 0,
-        "is_active": True,
-        "updated_at": "now()"
-    }
-    
-    try:
-        supabase.table("model_prices").upsert(data, on_conflict="provider, model").execute()
-        # Invalidar caché
-        redis_client.delete(f"price:{price.model_name}")
-        return {"status": "ok", "message": f"Price for {price.model_name} set to {price.price_per_unit}"}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-# --- OBSERVABILITY (TRACING) ---
+async def set_custom_price(price: CustomPrice, tenant_id: str = Depends(get_current_tenant_id)):
+    data = {"provider": f"custom-{tenant_id}", "model": price.model_name, "price_in": price.price_per_unit, "price_out": 0, "is_active": True, "updated_at": "now()"}
+    supabase.table("model_prices").upsert(data, on_conflict="provider, model").execute()
+    redis_client.delete(f"price:{price.model_name}")
+    return {"status": "ok", "message": f"Price set for {price.model_name}"}
 
 @router.get("/traces/{trace_id}/full")
 async def get_full_trace_story(trace_id: str, tenant_id: str = Depends(get_current_tenant_id)):
-    """
-    Devuelve la 'historia' completa de una ejecución para el cliente.
-    Incluye latencia, seguridad, coste y respuesta del modelo.
-    """
-    # Buscamos todos los eventos relacionados con esa traza
-    # Nota: Asegúrate de que tu tabla 'receipts' tenga una columna 'trace_id' y metadata JSONB
-    # Si 'trace_id' está dentro de 'usage_data' (metadata), ajusta la query:
-    # .filter("usage_data->>trace_id", "eq", trace_id)
-    
-    # Asumimos que hemos guardado trace_id dentro del JSON 'usage_data' en receipt.py/billing.py
-    # O si hemos creado columna dedicada (ideal). 
-    # Para MVP, consultamos sobre el JSONB 'usage_data'
-    
-    res = supabase.table("receipts") \
-        .select("*") \
-        .eq("tenant_id", tenant_id) \
-        .ilike("usage_data::text", f"%{trace_id}%") \
-        .execute()
-        # Nota: ilike sobre text es lento, usar operador ->> en producción si es columna indexada
-    
-    if not res.data:
-        raise HTTPException(status_code=404, detail="Trace not found")
-
-    data = res.data
-    
-    # Calcular resumen
-    # Extraer latency_ms del json usage_data
-    total_latency = sum(float(r.get('usage_data', {}).get('latency_ms', 0)) for r in data)
-    total_cost = sum(float(r.get('cost_real', 0)) for r in data)
-
-    return {
-        "summary": {
-            "trace_id": trace_id,
-            "total_latency_ms": round(total_latency, 2),
-            "total_cost": round(total_cost, 6),
-            "steps_count": len(data)
-        },
-        "timeline": data  # Esto es lo que el Front usará para el árbol
-    }
+    # Nota: ilike es lento, pero funcional para MVP.
+    res = supabase.table("receipts").select("*").eq("tenant_id", tenant_id).ilike("usage_data::text", f"%{trace_id}%").execute()
+    if not res.data: raise HTTPException(status_code=404, detail="Trace not found")
+    total_latency = sum(float(r.get('usage_data', {}).get('latency_ms', 0)) for r in res.data)
+    total_cost = sum(float(r.get('cost_real', 0)) for r in res.data)
+    return {"summary": {"trace_id": trace_id, "total_latency_ms": round(total_latency, 2), "total_cost": round(total_cost, 6), "steps_count": len(res.data)}, "timeline": res.data}
 
 @router.get("/compliance/residency-report")
 async def get_residency_report(tenant_id: str = Depends(get_current_tenant_id)):
-    """
-    Devuelve un resumen de cumplimiento que demuestra dónde se han procesado los datos.
-    """
-    res = supabase.table("receipts") \
-        .select("processed_in") \
-        .eq("tenant_id", tenant_id) \
-        .execute()
-    
-    total = len(res.data)
-    # Contar seguramente usando Python es mas lento que SQL count, 
-    # pero supabase-py no tiene count agrupado facil sin RPC. Para MVP está bien.
+    res = supabase.table("receipts").select("processed_in").eq("tenant_id", tenant_id).execute()
     eu_count = sum(1 for r in res.data if r.get('processed_in') == 'eu')
     us_count = sum(1 for r in res.data if r.get('processed_in') == 'us')
-    
-    compliance_status = "COMPLIANT"
-    
-    # Verificación Estricta (Hard Enforcement)
-    # Si somos un tenant EU y hay tráfico US (o viceversa), es un error crítico.
-    # Asumimos que el tenant quiere pureza total.
-    if (eu_count > 0 and us_count > 0):
-        compliance_status = "CRITICAL_ERROR"
-    elif (us_count > 0 and tenant_id.startswith("eu-")): # Ejemplo heurístico, o check config
-        # Si tuviéramos la región 'oficial' del tenant aquí sería mejor
-        compliance_status = "CRITICAL_ERROR"
-        
-    stats = {
-        "total_requests": total,
-        "processed_in_eu": eu_count,
-        "processed_in_us": us_count,
-        "compliance_percentage": 100.0 if compliance_status == "COMPLIANT" else 0.0
-    }
-
-
+    compliance_status = "CRITICAL_ERROR" if (eu_count > 0 and us_count > 0) else "COMPLIANT"
+    return {"total_requests": len(res.data), "processed_in_eu": eu_count, "processed_in_us": us_count, "compliance_percentage": 100.0 if compliance_status == "COMPLIANT" else 0.0}
