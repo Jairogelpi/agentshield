@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import ORJSONResponse
 from app.routers import authorize, receipt, dashboard, proxy, onboarding, compliance, analytics
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -7,22 +7,20 @@ from fastapi.middleware.gzip import GZipMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.limiter import limiter
-
-from slowapi.errors import RateLimitExceeded
-from app.limiter import limiter
 from app.services.cache import init_semantic_cache_index
+from app.services.market_oracle import update_market_rules
 
 import os
 import logging
 from logging.handlers import QueueHandler, QueueListener
 import queue
 import atexit
+import asyncio
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from logtail import LogtailHandler
 from app.services.safe_logger import PIIRedactionFilter # PII Firewall
@@ -106,7 +104,6 @@ async def lifespan(app: FastAPI):
     
     # 1. Recuperación de Cobros (WAL Recovery)
     try:
-        import asyncio
         asyncio.create_task(recover_pending_charges())
     except Exception as e:
         logger.critical(f"Failed to start Recovery Worker: {e}")
@@ -123,10 +120,12 @@ async def lifespan(app: FastAPI):
     # --- SHUTDOWN ---
     logger.info("🛑 AgentShield Core Shutting Down...")
 
-app = FastAPI(title="AgentShield API", version="1.0.0", lifespan=lifespan)
-
-# Setup Observability (OTEL + Grafana)
-setup_observability(app)
+app = FastAPI(
+    title="AgentShield API", 
+    version="1.0.0", 
+    lifespan=lifespan,
+    default_response_class=ORJSONResponse
+)
 
 # Setup Observability (OTEL + Grafana)
 setup_observability(app)

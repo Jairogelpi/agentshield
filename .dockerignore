@@ -1,0 +1,28 @@
+# Version Control
+.git
+.gitignore
+.github
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+
+# Rust
+target/
+rust_module/target/
+
+# IDE
+.vscode
+.idea
+
+# Logs & Temporary
+*.log
+tmp/
+coverage/
+htmlcov/
