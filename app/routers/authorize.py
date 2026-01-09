@@ -229,42 +229,58 @@ async def authorize_transaction(
 
     # --- 3. SMART ROUTING (THE BROKER) ---
     routing_config = policy.get("smart_routing", {})
+    # Prioridad: Flag global de la política del tenant
+    is_smart_routing_active = routing_config.get("enabled", False)
     suggested_model = None
     
     # Si tenemos una decisión DENIED por presupuesto, intentamos salvarla
-    if decision == "DENIED" and "budget exceeded" in reason.lower() and routing_config.get("enabled", False):
+    if decision == "DENIED" and "budget exceeded" in reason.lower():
         
-        # Buscar fallbacks
-        fallbacks = routing_config.get("fallbacks", {}).get(req.model, [])
+        # OBSERVABILITY: Track decision making
+        from opentelemetry import trace
+        tracer = trace.get_tracer(__name__)
         
-        for fallback_model in fallbacks:
-            # 1. Ver si fallback está permitido
-            if allowed_models and fallback_model not in allowed_models:
-                continue 
-                
-            # 2. Predecir coste fallback (Estimador Multimodal)
-            f_cost_est = await estimator.estimate_cost(
-                model=fallback_model,
-                task_type=task_type,
-                input_unit_count=input_qty,
-                metadata=req.metadata
-            )
+        with tracer.start_as_current_span("smart_routing_check") as span:
+            span.set_attribute("tenant.id", tenant_id)
+            span.set_attribute("routing.enabled", is_smart_routing_active)
             
-            # 3. Check presupuesto con nuevo coste
-            budget_fits = True
-            if monthly_limit > 0 and (current_spend + f_cost_est) > monthly_limit:
-                budget_fits = False
-            
-            # 4. Check límite request con nuevo coste
-            if budget_fits and effective_limit > 0 and f_cost_est > effective_limit:
-                budget_fits = False
+            if not is_smart_routing_active:
+                span.add_event("Smart Routing skipped by tenant configuration")
                 
-            if budget_fits:
-                # ¡ENCONTRADO UN SALVAVIDAS!
-                decision = "APPROVED"
-                reason = f"Switched to {fallback_model} to fit budget."
-                suggested_model = fallback_model
-                break
+            elif is_smart_routing_active:
+                # Buscar fallbacks
+                fallbacks = routing_config.get("fallbacks", {}).get(req.model, [])
+                
+                for fallback_model in fallbacks:
+                    # 1. Ver si fallback está permitido
+                    if allowed_models and fallback_model not in allowed_models:
+                        continue 
+                        
+                    # 2. Predecir coste fallback (Estimador Multimodal)
+                    f_cost_est = await estimator.estimate_cost(
+                        model=fallback_model,
+                        task_type=task_type,
+                        input_unit_count=input_qty,
+                        metadata=req.metadata
+                    )
+                    
+                    # 3. Check presupuesto con nuevo coste
+                    budget_fits = True
+                    if monthly_limit > 0 and (current_spend + f_cost_est) > monthly_limit:
+                        budget_fits = False
+                    
+                    # 4. Check límite request con nuevo coste
+                    if budget_fits and effective_limit > 0 and f_cost_est > effective_limit:
+                        budget_fits = False
+                        
+                    if budget_fits:
+                        # ¡ENCONTRADO UN SALVAVIDAS!
+                        decision = "APPROVED"
+                        reason = f"Switched to {fallback_model} to fit budget."
+                        suggested_model = fallback_model
+                        span.set_attribute("routing.success", True)
+                        span.set_attribute("routing.fallback_model", fallback_model)
+                        break
 
     # 4. Persistencia (Audit)
     auth_log = supabase.table("authorizations").insert({

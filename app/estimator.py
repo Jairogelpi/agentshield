@@ -148,4 +148,19 @@ class MultimodalEstimator:
             
         return total_cost_usd * rate
 
+    async def calculate_projected_loss(self, original_model: str, used_model: str, tokens: int) -> float:
+        """
+        Calcula la diferencia de precio TOTAL entre el modelo original y el usado (o el que se pudo usar).
+        """
+        _, p_out_orig = await self._resolve_price(original_model)
+        _, p_out_used = await self._resolve_price(used_model)
+        
+        # Asumimos que el input cost también varía, pero para simplificar métrica FOMO usamos output o promedio
+        # O mejor: sumamos input y output savings si tuvieramos el split
+        # Aquí usamos p_out como proxy del "coste por token" general para la métrica rápida
+        
+        diff = p_out_orig - p_out_used
+        total_loss = diff * tokens
+        return max(0.0, total_loss)
+
 estimator = MultimodalEstimator()

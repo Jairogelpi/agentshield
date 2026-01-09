@@ -3,53 +3,22 @@ from app.utils import fast_json as json
 import logging
 from litellm import acompletion
 from app.db import redis_client, supabase
+import numpy as np
+from opentelemetry import trace
+import random
 
+tracer = trace.get_tracer(__name__)
 logger = logging.getLogger("agentshield.arbitrage")
 
-class WiseArbitrageEngine:
+class AgentShieldRLArbitrator:
     def __init__(self):
         self.router_model = "groq/llama3-8b-8192"
-        # SLA: 2000ms. Si predicimos más que esto, penalizamos.
-        self.latency_threshold_ms = 2000 
-        
-        # --- KALMAN FILTER (LUA SCRIPT 2026) ---
-        # State-Space Model para latencia de red.
-        # x = Estimación del estado (Latencia)
-        # p = Covarianza del error (Incertidumbre)
-        # q = Ruido del proceso (Qué tan volátil es el proveedor por naturaleza) ~ 0.1
-        # r = Ruido de la medición (Jitter de la red) ~ 10.0
-        self.kalman_script = redis_client.register_script("""
-            local key_x = KEYS[1] -- Estado (Latencia Estimada)
-            local key_p = KEYS[2] -- Incertidumbre (Covarianza)
-            
-            local measurement = tonumber(ARGV[1])
-            local Q = 0.05  -- Process Noise (Asumimos estabilidad inherente)
-            local R = 50.0  -- Measurement Noise (Jitter de Internet alto)
-            
-            -- 1. Recuperar estado previo
-            local x = tonumber(redis.call('GET', key_x)) or measurement
-            local p = tonumber(redis.call('GET', key_p)) or 1.0
-            
-            -- 2. PREDICT (Proyección a priori)
-            -- Asumimos modelo estático x(k) = x(k-1) para latencia base
-            local x_pred = x
-            local p_pred = p + Q
-            
-            -- 3. UPDATE (Corrección basada en medición)
-            -- Ganancia de Kalman (K): Cuánto confiamos en el nuevo dato vs historia
-            local K = p_pred / (p_pred + R)
-            
-            -- Actualizar estado
-            local x_new = x_pred + K * (measurement - x_pred)
-            local p_new = (1 - K) * p_pred
-            
-            -- Guardar
-            redis.call('SET', key_x, x_new)
-            redis.call('SET', key_p, p_new)
-            
-            -- Retornar: [Latencia Estimada, Incertidumbre/Riesgo]
-            return {x_new, p_new}
-        """) 
+        # RL Hyperparameters
+        self.learning_rate = 0.05
+        self.discount_factor = 0.9 # Bandit usually 0, but user requested 0.9
+        self.epsilon = 0.1 # Exploration rate
+        self.min_epsilon = 0.01
+        self.epsilon_decay = 0.995
 
     async def _get_arbitrage_rules(self) -> dict:
         """Carga reglas dinámicas (Cache + DB)"""
@@ -78,30 +47,68 @@ class WiseArbitrageEngine:
         await redis_client.setex("market:active_models_v2", 600, json.dumps(models))
         return models
 
-    async def get_model_metrics(self, model: str) -> tuple[float, float]:
+    def _get_state_key(self, complexity_score: float, input_tokens: int) -> str:
         """
-        Devuelve (Latencia Estimada, Incertidumbre).
-        La incertidumbre (P) nos dice si el proveedor es errático.
+        Discretiza el estado para la Q-Table.
+        State = (ComplexityBucket, SizeBucket)
         """
-        x = await redis_client.get(f"stats:latency:{model}:x")
-        p = await redis_client.get(f"stats:latency:{model}:p")
-        return float(x) if x else 500.0, float(p) if p else 1.0
+        # Bucket Complejidad: 0-20 (Trivial), 20-50 (Simple), 50-80 (Medium), 80-100 (Hard)
+        if complexity_score < 20: c_bucket = "TRIVIAL"
+        elif complexity_score < 50: c_bucket = "SIMPLE"
+        elif complexity_score < 80: c_bucket = "MEDIUM"
+        else: c_bucket = "HARD"
+        
+        # Bucket Tamaño: <500, <2000, >2000
+        if input_tokens < 500: s_bucket = "SMALL"
+        elif input_tokens < 2000: s_bucket = "NORMAL"
+        else: s_bucket = "HUGE"
+        
+        return f"{c_bucket}:{s_bucket}"
 
-    async def record_latency(self, model: str, ms: float):
+    async def get_q_value(self, state: str, action_model: str) -> float:
+        """Recupera Q(s,a) de Redis"""
+        key = f"rl:q:{state}:{action_model}"
+        val = await redis_client.get(key)
+        return float(val) if val else 0.0
+
+    async def update_learning(self, state: str, action_model: str, reward: float):
         """
-        Ingesta datos en el Filtro de Kalman.
-        Operación atómica en Redis (High-Frequency safe).
+        Actualiza Q(s,a) usando la ecuación de Bellman (o Bandit update).
+        Q(s,a) = Q(s,a) + alpha * (reward - Q(s,a))  [Bandit simplificado]
         """
+        current_q = await self.get_q_value(state, action_model)
+        new_q = current_q + self.learning_rate * (reward - current_q)
+        
+        key = f"rl:q:{state}:{action_model}"
+        await redis_client.set(key, new_q)
+        
+        # Log learning
+        logger.info(f"🧠 RL Update [{state}][{action_model}]: {current_q:.4f} -> {new_q:.4f} (Reward: {reward:.4f})")
+
+    def calculate_reward(self, cost_saved: float, rerank_score: float, latency_ms: float, user_satisfaction=1.0) -> float:
+        """
+        Función de Recompensa 2026:
+        Optimiza el ROI balanceando precisión (rerank) y coste.
+        """
+        # Penalizamos latencia alta y baja precisión agresivamente
+        # Rerank score > 0.95 es ideal. Si baja, penalizamos exponencialmente.
+        precision_penalty = 1.0 if rerank_score > 0.95 else (rerank_score * 0.5)
+        
+        # Latencia: Sigmoide que penaliza fuerte > 500ms
+        # 1.0 / (1.0 + exp(0.01 * (lat - 500))) -> 500ms=0.5, 0ms~1.0, 1000ms~0.0
         try:
-            # Keys separadas para Estado (x) e Incertidumbre (p)
-            key_x = f"stats:latency:{model}:x"
-            key_p = f"stats:latency:{model}:p"
-            await self.kalman_script(keys=[key_x, key_p], args=[ms])
-        except Exception as e:
-            logger.warning(f"Kalman update failed: {e}")
+             latency_penalty = 1.0 / (1.0 + np.exp(0.01 * (latency_ms - 500)))
+        except OverflowError:
+             latency_penalty = 0.0
+
+        # El ROI es el ahorro (normalizado o real) multiplicado por la calidad
+        # Asumimos cost_saved está en rango [0, 1] (pct) o absoluto bajo.
+        # Boost de recompensa si ahorramos dinero CON calidad.
+        reward = (cost_saved + 0.1) * precision_penalty * latency_penalty * user_satisfaction * 10
+        return float(reward)
 
     async def analyze_complexity(self, messages: list) -> dict:
-        """Juez IA (Sin cambios, ya es eficiente)"""
+        """Juez IA (Sin cambios)"""
         user_content = next((m['content'] for m in reversed(messages) if m['role'] == 'user'), "")
         est_tokens = len(user_content) // 4
         
@@ -122,66 +129,79 @@ class WiseArbitrageEngine:
         except:
             return {"score": 100, "input_tokens": est_tokens}
 
+    async def record_latency(self, model: str, ms: float):
+        # Stub para compatibilidad si alguien lo llama, pero el RL aprende de la recompensa global
+        pass
+
     async def find_best_bidder(self, requested_model: str, analysis: dict, max_output_tokens: int = 1000, tenant_allowlist: list = None):
         """
-        Subasta Cuántica 2026: Precio + Contexto + Kalman Prediction + Reglas de Mercado.
+        Selección basada en Deep RL (Contextual Bandit).
         """
-        rules = await self._get_arbitrage_rules()
-        PRICE_MAX_TRIVIAL = rules.get("pricing", {}).get("trivial_max_price", 0.5)
-        PRICE_MAX_STD = rules.get("pricing", {}).get("standard_max_price", 5.0)
-        
         score = analysis.get("score", 100)
         input_tokens = analysis.get("input_tokens", 0)
+        state = self._get_state_key(score, input_tokens)
         
-        # 1. Seguridad Cognitiva
-        th_std = rules.get("thresholds", {}).get("standard_score", 70)
-        if score > th_std:
-            return requested_model, "COMPLEXITY_RETAINED", 0.0
-
+        # Reglas base para seguridad
         market_models = await self._get_market_models()
         target = next((m for m in market_models if m['model'] == requested_model), None)
         target_price = float(target['price_out']) if target else 100.0
         
+        # Candidatos válidos (Filtros duros de contexto y allowlist)
         candidates = []
         for m in market_models:
             m_id = m['model']
-            price = float(m.get('price_out', 0) or 0)
             context = int(m.get('context_window', 4096))
-            
-            # Filtros duros
             if tenant_allowlist and m_id not in tenant_allowlist: continue
             if context < (input_tokens + max_output_tokens): continue
-
-            # --- FILTRO PREDICTIVO (KALMAN) ---
-            # Obtenemos Latencia Estimada (x) y Volatilidad (p)
-            lat_est, volatility = await self.get_model_metrics(m_id)
+            candidates.append(m)
             
-            # Penalización por Riesgo:
-            # "Coste Efectivo de Latencia" = Latencia + (Volatilidad * 100)
-            # Si un modelo es rápido (200ms) pero muy incierto (p=5.0), lo tratamos como de 700ms.
-            risk_adjusted_latency = lat_est + (volatility * 100)
-            
-            if risk_adjusted_latency > self.latency_threshold_ms:
-                continue
-
-            # Filtros de Precio Dinámicos (Oracle)
-            th_triv = rules["thresholds"]["trivial_score"]
-            
-            if score < th_triv: 
-                if price <= PRICE_MAX_TRIVIAL and price < target_price: 
-                    candidates.append(m)
-            elif score <= th_std:
-                if price <= PRICE_MAX_STD and price < target_price:
-                    candidates.append(m)
-        
         if not candidates:
-            return requested_model, "NO_BETTER_OPTION", 0.0
+            return requested_model, "NO_OPTIONS", 0.0
 
-        # Selección: Minimizamos precio, pero podríamos minimizar (Precio * Latencia)
-        winner = min(candidates, key=lambda x: float(x.get('price_out', 0)))
+        # Epsilon-Greedy Exploration
+        # Con probabilidad epsilon, elegimos al azar para descubrir nuevas eficiencias
+        if random.random() < self.epsilon:
+            winner = random.choice(candidates)
+            reason = "RL_EXPLORATION"
+        else:
+            # Exploitation: Elegimos el modelo con mayor Q-Value
+            best_q = -float('inf')
+            winner = candidates[0]
+            
+            for cand in candidates:
+                q = await self.get_q_value(state, cand['model'])
+                # Factor de precio básico: Si no hay info RL, preferimos barato
+                if q == 0.0:
+                    price = float(cand.get('price_out', 0))
+                    # Heurística inicial: Q inverso al precio (más barato = mejor start)
+                    q = 1.0 / (price + 0.1)
+                
+                if q > best_q:
+                    best_q = q
+                    winner = cand
+            reason = "RL_EXPLOITATION"
+
         winner_id = winner['model']
-        
         savings = (target_price - float(winner.get('price_out', 0))) / target_price if target_price > 0 else 0
-        return winner_id, "SMART_ROUTING", savings
+        
+        # Enriquecemos el análisis con el estado para que el proxy pueda hacer el feedback
+        analysis["rl_state"] = state
+        
+        return winner_id, reason, savings
 
-arbitrage_engine = WiseArbitrageEngine()
+    async def get_potential_arbitrage_gain(self, original_model: str, prompt_complexity_score: float) -> tuple[float, str]:
+        # Mantenemos lógica simple para FOMO metrics
+        if prompt_complexity_score < 40:
+             market = await self._get_market_models()
+             original = next((m for m in market if m['model'] == original_model), None)
+             price_orig = float(original.get('price_out', 0)) if original else 0.0
+             if price_orig == 0: return 0.0, original_model
+             
+             candidates = [m for m in market if float(m.get('price_out',0)) < price_orig]
+             if candidates:
+                winner = min(candidates, key=lambda x: float(x.get('price_out', 0)))
+                price_cheap = float(winner.get('price_out', 0))
+                return (price_orig - price_cheap), winner['model']
+        return 0.0, original_model
+
+arbitrage_engine = AgentShieldRLArbitrator()

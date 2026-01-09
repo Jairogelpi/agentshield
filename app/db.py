@@ -43,7 +43,7 @@ async def get_current_spend(tenant_id: str, cost_center: str):
 
 async def increment_spend(tenant_id: str, cost_center: str, amount: Decimal, metadata: dict = None):
     """
-    1. Actualiza Redis (Velocidad).
+    1. Actualiza Redis (Velocidad). Soporta importes negativos (Earnings).
     2. Escribe en WAL (Seguridad).
     3. Lanza persistencia asíncrona (Eficiencia).
     """
@@ -55,51 +55,31 @@ async def increment_spend(tenant_id: str, cost_center: str, amount: Decimal, met
         amount_float = float(amount)
         
         # 1. ACTUALIZACIÓN INSTANTÁNEA (Redis - Hot Path)
+        # Sigue siendo la fuente de verdad para la limitación de tasa (Rate Limiting)
         new_total = await redis_client.incrbyfloat(spend_key, amount_float)
         
-        # 2. WRITE-AHEAD LOG (WAL) - El seguro de vida
-        # Creamos un paquete de datos inmutable
-        charge_payload = {
-            "id": str(uuid.uuid4()), # Idempotencia
+        # 2. STREAM BUFFER (Alta Velocidad)
+        # En lugar de escribir en WAL y luego en DB, enviamos al Stream.
+        # El Worker se encargará de la persistencia asíncrona y batched.
+        
+        event_payload = {
             "tid": tenant_id,
             "cc": cost_center,
-            "amt": str(amount), # Serialize as String to preserve precision in JSON
-            "ts": time.time(),
-            "meta": metadata or {}
+            "amt": str(amount),
+            "ts": str(time.time()), # xadd espera strings/bytes
+            "meta": json.dumps(metadata or {})
         }
         
-        # 3. DOUBLE WRITE STRATEGY (Redis WAL + Supabase Log)
-        # Lanzamos ambas escrituras de seguridad.
-        # Si Redis muere, queda el Log en PG. Si PG está lento, Redis responde rápido.
-        loop = asyncio.get_running_loop()
-        
-        # A. Escribir en Tabla de Logs (Caja Negra) - Fire & Forget optimizado
-        # No esperamos a que termine para no penalizar latencia, pero se lanza.
-        log_task = loop.run_in_executor(None, lambda: supabase.table("pending_transactions_log").insert({
-            "trace_id": (metadata or {}).get("trace_id", str(uuid.uuid4())),
-            "tenant_id": tenant_id,
-            "cost_center_id": cost_center,
-            "amount": float(amount), # Postgres numeric accepts float, but string is safer if supported
-            "metadata": metadata or {},
-            "status": "PENDING"
-        }).execute())
-        
-        # B. Escribir en Redis WAL (Cola de Procesamiento Real)
-        wal_task = redis_client.rpush(WAL_QUEUE_KEY, json.dumps(charge_payload))
-        
-        # Esperamos solo al WAL de Redis (es ultra rápido y es nuestro source of truth primario)
-        await wal_task
-        
-        # 3. PROCESAMIENTO ASÍNCRONO
-        # Pasamos el raw_payload para poder borrarlo exactamente después
-        asyncio.create_task(persist_spend_with_wal(charge_payload, raw_payload))
+        # Añadimos al stream 'billing:stream'
+        # MAXLEN ~ 100000 para evitar que explote si el worker muere
+        await redis_client.xadd("billing:stream", event_payload, maxlen=100000, approximate=True)
         
         return new_total
 
     except Exception as e:
         logger.error(f"❌ Redis Failure in increment_spend: {e}")
         # Fallback de emergencia: Intentar escribir directo a DB síncronamente
-        # (Esto ralentiza la request pero salva el dinero si Redis falla)
+        # (Esto ralentiza la request pero salva el dinero si Redis falla totalmente)
         await _persist_to_db_core(tenant_id, cost_center, amount)
         return 0.0
 

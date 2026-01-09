@@ -41,3 +41,14 @@ def calculate_footprint(model: str, region: str, tokens_total: int) -> float:
     
     g_co2 = energy_kwh * intensity
     return round(g_co2, 6)
+
+def calculate_extra_emission(orig_model: str, target_model: str) -> float:
+    """
+    Calcula cuántos gramos EXTRA de CO2 se emiten por usar el modelo original 
+    en lugar del optimizado. Asume 1000 tokens promedio para la métrica.
+    """
+    # Usamos región 'eu' como baseline
+    footprint_orig = calculate_footprint(orig_model, "eu", 1000)
+    footprint_target = calculate_footprint(target_model, "eu", 1000)
+    
+    return max(0.0, footprint_orig - footprint_target)

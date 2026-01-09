@@ -16,6 +16,13 @@ class AIUseCase(str, Enum):
     BIOMETRIC_ID = "biometric_id"       # Identificación (Riesgo Inaceptable/Alto)
     LEGAL_ASSIST = "legal_assist"       # Justicia (Alto Riesgo)
 
+class SovereignConfig(BaseModel):
+    share_knowledge: bool = False
+    buy_knowledge: bool = True
+    revenue_share_target: float = 0.5
+    # NUEVO: Control granular por tenant para el arbitraje automático
+    smart_routing_enabled: bool = True
+
 class AuthorizeRequest(BaseModel):
     actor_id: str = Field(..., description="ID del agente o usuario que ejecuta")
     cost_center_id: str = Field(..., description="ID del proyecto o centro de costes")

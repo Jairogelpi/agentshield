@@ -255,6 +255,27 @@ async def update_tenant_settings(settings: TenantSettings, tenant_id: str = Depe
     supabase.table("tenants").update(updates).eq("id", tenant_id).execute()
     return {"status": "updated", "data": updates}
 
+@router.patch("/settings/smart-routing")
+async def toggle_smart_routing(enabled: bool, tenant_id: str = Depends(get_current_tenant_id)):
+    """
+    Activa o desactiva el arbitraje de modelos para el tenant actual.
+    """
+    # 1. Actualizar la política en la DB
+    # Buscamos la política activa y modificamos el JSON de rules
+    policy = await get_policy_rules(tenant_id)
+    
+    if "smart_routing" not in policy:
+        policy["smart_routing"] = {}
+        
+    policy["smart_routing"]["enabled"] = enabled
+    
+    supabase.table("policies").update({"rules": policy}).eq("tenant_id", tenant_id).eq("is_active", True).execute()
+    
+    # 2. Invalidar caché en Redis para que el cambio sea instantáneo
+    await redis_client.delete(f"policy:active:{tenant_id}")
+    
+    return {"status": "success", "smart_routing_active": enabled}
+
 class ApprovalDecision(BaseModel):
     decision: str
     reason: Optional[str] = None
@@ -349,3 +370,59 @@ async def get_market_health_matrix(tenant_id: str = Depends(get_current_tenant_i
         
     # Ordenar por latencia (los mejores primero)
     return sorted(health_matrix, key=lambda x: x["estimated_latency_ms"])
+
+@router.get("/sovereign/stats")
+async def get_sovereign_stats(tenant_id: str = Depends(get_current_tenant_id)):
+    """
+    Retorna estadísticas de la "Memoria Soberana" (Ganancias por conocimiento compartido).
+    """
+    try:
+        # Sumar transacciones negativas (Earnings) desde el log de transacciones
+        # pending_transactions_log es el ledger inmutable.
+        res = supabase.table("pending_transactions_log")\
+            .select("amount")\
+            .eq("tenant_id", tenant_id)\
+            .lt("amount", 0)\
+            .execute()
+            
+        total_earnings = sum(abs(float(item['amount'])) for item in res.data)
+        
+        # Opcional: Contar hits (número de transacciones)
+        total_sales = len(res.data)
+        
+        return {
+            "total_earnings": round(total_earnings, 4),
+            "total_sales_count": total_sales,
+            "currency": "EUR",
+            "message": "Start saving more by sharing knowledge!" if total_earnings == 0 else "Great job! Your knowledge is an asset."
+        }
+    except Exception as e:
+        logger.error(f"Sovereign Stats Error: {e}")
+        return {"total_earnings": 0.0, "total_sales_count": 0, "currency": "EUR"}
+
+@router.get("/dashboard/arbitrage/comparison")
+async def get_arbitrage_savings_report(tenant_id: str = Depends(get_current_tenant_id)):
+    """
+    Retorna el ahorro acumulado y el ahorro proyectado (pérdida potencial).
+    FOMO Metrics para incentivar Smart Routing.
+    """
+    # 1. Obtener ahorros reales (esto requeriría sumar transactions log donde mode='ARBITRAGE_SAVING' si existiera)
+    # Por ahora mockeamos "actual_savings" o lo leemos si tuvieramos un contador
+    actual_savings = float(await redis_client.get(f"stats:{tenant_id}:actual_savings") or 0.0)
+    
+    # 2. Obtener pérdidas (lo que acabamos de implementar)
+    missed_savings = float(await redis_client.get(f"stats:{tenant_id}:missed_savings") or 0.0)
+    missed_carbon = float(await redis_client.get(f"stats:{tenant_id}:missed_carbon") or 0.0)
+    
+    # Verificar estado actual
+    policy = await get_policy_rules(tenant_id)
+    is_enabled = policy.get("smart_routing", {}).get("enabled", False)
+    
+    return {
+        "smart_routing_enabled": is_enabled,
+        "actual_savings": round(actual_savings, 4),
+        "potential_savings_lost": round(missed_savings, 4),
+        "potential_trees_lost": int(missed_carbon / 25.0), # 1 árbol ~ 25kg CO2
+        "message": "Activa Smart Routing para recuperar estos ahorros" if not is_enabled else "Estás optimizando al máximo",
+        "currency": "EUR"
+    }
