@@ -1,9 +1,8 @@
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
+
 // Imports Cleaned
 use regex::Regex;
 use lazy_static::lazy_static;
-// use std::io::Write; // Unused
 use crc32fast::Hasher as Crc32;
 
 // --- 1. RUST REGEX ENGINE (PII GUARD) ---
