@@ -54,6 +54,7 @@ async def forget_user(
                 "message": "User data has been anonymized. Financial records remain intact.",
                 "legal_note": "This action is irreversible and GDPR Article 17 compliant."
             }
+        except Exception as e:
             span.set_attribute("gdpr.status", "error")
             span.record_exception(e)
             raise HTTPException(status_code=500, detail=f"Compliance Error: {str(e)}")
