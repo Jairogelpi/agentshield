@@ -19,6 +19,8 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives import serialization
 
+logger = logging.getLogger("agentshield.proxy")
+
 # --- RUST ACCELERATOR (HYBRID MODE) ---
 try:
     import agentshield_rust
@@ -45,7 +47,7 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 from app.services.arbitrage import arbitrage_engine
 
-logger = logging.getLogger("agentshield.proxy")
+
 tracer = trace.get_tracer(__name__)
 CURRENT_REGION = os.getenv("SERVER_REGION", "eu")
 
