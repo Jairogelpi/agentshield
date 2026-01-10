@@ -115,6 +115,23 @@ async def lifespan(app: FastAPI):
     # 3. Iniciar Oráculo de Mercado (Async) - Obtiene precios "frescos"
     asyncio.create_task(update_market_rules())
 
+    # 4. WARMUP (Modelos en Memoria tras arranque exitoso)
+    # Esperamos un poco para que Granian bindee el puerto primero y pase el Health Check de Render
+    async def warmup_models():
+        await asyncio.sleep(10) # 10s delay
+        logger.info("🔥 Warming up AI Models (Embeddings & PII)...")
+        try:
+            from app.services.cache import get_embedding_model
+            from app.services.pii_guard import get_pii_engine
+            # Force load
+            await asyncio.to_thread(get_embedding_model)
+            await asyncio.to_thread(get_pii_engine)
+            logger.info("✅ AI Models Ready in Memory!")
+        except Exception as e:
+            logger.warning(f"⚠️ Warmup Partial Fail: {e}")
+
+    asyncio.create_task(warmup_models())
+
     yield 
     
     # --- SHUTDOWN ---
