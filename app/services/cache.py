@@ -24,6 +24,10 @@ def get_embedding_model():
         logger.info("🚀 Cargando modelo de embeddings en memoria...")
         # Lazy Import to prevent startup timeout
         from sentence_transformers import SentenceTransformer
+        import torch
+        # SINGLE CPU TUNING: Prevent thread contention on 1-core instances
+        torch.set_num_threads(1)
+        
         # El modelo ya debe estar en la carpeta de cache de HuggingFace gracias al Dockerfile
         _model = SentenceTransformer('all-MiniLM-L6-v2')
     return _model
