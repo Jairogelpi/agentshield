@@ -123,9 +123,11 @@ async def lifespan(app: FastAPI):
         try:
             from app.services.cache import get_embedding_model
             from app.services.pii_guard import get_pii_engine
+            from app.services.reranker import get_reranker_model
             # Force load
             await asyncio.to_thread(get_embedding_model)
             await asyncio.to_thread(get_pii_engine)
+            await asyncio.to_thread(get_reranker_model)
             logger.info("✅ AI Models Ready in Memory!")
         except Exception as e:
             logger.warning(f"⚠️ Warmup Partial Fail: {e}")

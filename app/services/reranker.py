@@ -12,6 +12,10 @@ def get_reranker_model():
     global _reranker_model
     if _reranker_model is None:
         from sentence_transformers import CrossEncoder
+        import torch
+        # SINGLE CPU TUNING
+        torch.set_num_threads(1)
+        
         logger.info("⚖️ Loading Cross-Encoder Model (Notary-Grade Precision)...")
         # 'cross-encoder/ms-marco-MiniLM-L-6-v2' es el estándar de velocidad/precisión
         _reranker_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
