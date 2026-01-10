@@ -4,7 +4,7 @@ import logging
 
 logger = logging.getLogger("agentshield.cache")
 import numpy as np
-from sentence_transformers import SentenceTransformer
+
 from redis.commands.search.query import Query
 from redis.commands.search.field import VectorField, TextField
 from redis.commands.search.indexDefinition import IndexDefinition, IndexType
@@ -22,6 +22,8 @@ def get_embedding_model():
     global _model
     if _model is None:
         logger.info("🚀 Cargando modelo de embeddings en memoria...")
+        # Lazy Import to prevent startup timeout
+        from sentence_transformers import SentenceTransformer
         # El modelo ya debe estar en la carpeta de cache de HuggingFace gracias al Dockerfile
         _model = SentenceTransformer('all-MiniLM-L6-v2')
     return _model
