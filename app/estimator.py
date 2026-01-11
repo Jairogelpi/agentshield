@@ -1,7 +1,7 @@
 from litellm import model_cost
 from typing import Dict, Any
 from app.db import supabase, redis_client
-import json
+from app.utils import fast_json as json
 
 class MultimodalEstimator:
     """

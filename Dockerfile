@@ -69,4 +69,4 @@ RUN useradd -m appuser && chown -R appuser /app
 USER appuser
 
 # Comando de arranque optimizado (Granian - Rust HTTP Server)
-CMD ["sh", "-c", "granian --interface asgi app.main:app --host 0.0.0.0 --port ${PORT:-10000} --workers ${WEB_CONCURRENCY:-2}"]
+CMD ["sh", "-c", "granian --interface asgi app.main:app --host 0.0.0.0 --port ${PORT:-10000} --workers ${WEB_CONCURRENCY:-1}"]

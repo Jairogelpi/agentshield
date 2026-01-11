@@ -164,3 +164,71 @@ async def recover_pending_charges():
         
     except Exception as e:
         logger.critical(f"🔥 FATAL: Falló el worker de recuperación: {e}")
+
+from datetime import datetime
+
+async def get_function_config(tenant_id: str, func_id: str) -> dict:
+    if not func_id: return None
+    
+    # 1. Cache Key
+    key = f"func_conf:{tenant_id}:{func_id}"
+    
+    # 2. Redis
+    cached = await redis_client.get(key)
+    if cached: return json.loads(cached)
+    
+    # 3. Supabase
+    loop = asyncio.get_running_loop()
+    def _fetch():
+        return supabase.table("function_configs")\
+            .select("*")\
+            .eq("tenant_id", tenant_id)\
+            .eq("function_id", func_id)\
+            .maybe_single()\
+            .execute()
+    
+    res = await loop.run_in_executor(None, _fetch)
+    
+    if res.data:
+        config = res.data
+        
+        # --- LÓGICA DE CENICIENTA (Lazy Reset) ---
+        # Si last_used es de ayer y hay gasto acumulado, reiniciamos a 0.
+        try:
+            last_used_str = config.get('last_used')
+            if last_used_str:
+                # Ajuste de zona horaria simple (Z -> +00:00 para Python isoformat)
+                last_used_dt = datetime.fromisoformat(last_used_str.replace('Z', '+00:00'))
+                today = datetime.utcnow().date()
+                
+                if last_used_dt.date() < today and config.get('current_spend_daily', 0) > 0:
+                    # 1. Reiniciamos en background (Fire & Forget)
+                    asyncio.create_task(_reset_daily_spend(tenant_id, func_id))
+                    # 2. Falseamos el dato localmente para permitir esta request
+                    config['current_spend_daily'] = 0.0
+        except Exception as e:
+            logger.warning(f"Lazy Reset logic check failed: {e}")
+
+        # Guardar en Redis y Actualizar heartbet
+        await redis_client.setex(key, 60, json.dumps(config))
+        asyncio.create_task(_touch_function_last_used(tenant_id, func_id))
+        return config
+    
+    return None
+
+# Función auxiliar necesaria para el reinicio
+async def _reset_daily_spend(tid, fid):
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, lambda: supabase.table("function_configs").update({"current_spend_daily": 0}).eq("tenant_id", tid).eq("function_id", fid).execute())
+    except: pass
+
+async def _touch_function_last_used(tid, fid):
+    """Actualiza la fecha de uso para saber qué funciones están vivas"""
+    try:
+        loop = asyncio.get_running_loop()
+        def _update():
+             return supabase.table("function_configs").update({"last_used": "now()"}).eq("tenant_id", tid).eq("function_id", fid).execute()
+        await loop.run_in_executor(None, _update)
+    except:
+        pass

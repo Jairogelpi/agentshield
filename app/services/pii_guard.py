@@ -5,6 +5,23 @@ import asyncio
 import numpy as np
 import time
 from litellm import acompletion
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
+
+tracer = trace.get_tracer(__name__)
+
+# Constants
+USE_LOCAL_PII = os.getenv("USE_LOCAL_PII", "true").lower() == "true"
+ONNX_MODEL_PATH = os.getenv("ONNX_MODEL_PATH", "/app/models/pii-ner-quantized.onnx")
+TOKENIZER_PATH = os.getenv("TOKENIZER_PATH", "/app/models/tokenizer.json")
+PII_MODEL_API = os.getenv("PII_MODEL_API", "gpt-3.5-turbo")
+
+try:
+    import agentshield_rust
+    RUST_AVAILABLE = True
+except ImportError:
+    RUST_AVAILABLE = False
+    logging.getLogger(__name__).warning("Rust Module not found. Running in Python mode.")
 
 # Lazy global instance
 _local_brain = None

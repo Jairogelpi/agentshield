@@ -1,4 +1,5 @@
 # scripts/billing_worker.py
+from app.utils import fast_json as json
 import asyncio
 import os
 import redis.asyncio as redis
@@ -58,7 +59,8 @@ async def flush_billing_to_supabase():
                 continue
 
             # 2. AGREGACIÓN INTELIGENTE (Batching)
-            batch_updates = defaultdict(float)
+            batch_updates = defaultdict(float) # For Cost Centers
+            function_updates = defaultdict(float) # For Function Configs (Ghost Budget Fix)
             event_ids = []
 
             # redis returns: [[stream_name, [[msg_id, {field: value, ...}], ...]]]
@@ -69,6 +71,17 @@ async def flush_billing_to_supabase():
                     cc = data.get(b'cc').decode('utf-8')
                     amt = float(data.get(b'amt').decode('utf-8'))
                     
+                    # Extract metadata for function_id
+                    try:
+                        meta_raw = data.get(b'meta')
+                        if meta_raw:
+                            meta = json.loads(meta_raw.decode('utf-8'))
+                            fid = meta.get('function_id')
+                            if fid:
+                                function_updates[(tid, fid)] += amt
+                    except Exception as meta_e:
+                        logger.warning(f"Failed to parse metadata in worker: {meta_e}")
+
                     key = (tid, cc)
                     batch_updates[key] += amt
                     event_ids.append(msg_id)
@@ -92,6 +105,14 @@ async def flush_billing_to_supabase():
                 # For safety, let's wrap in executor.
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, lambda: supabase.rpc("batch_increment_spend", {"payload": rpc_payload}).execute())
+                
+                # 3b. Escritura masiva para Functions (Si hay)
+                if function_updates:
+                    func_payload = [
+                        {"tid": k[0], "fid": k[1], "amt": v}
+                        for k, v in function_updates.items()
+                    ]
+                    await loop.run_in_executor(None, lambda: supabase.rpc("batch_increment_function_spend", {"payload": func_payload}).execute())
                 
                 # 4. ACK (Acknowledge processing)
                 if event_ids:

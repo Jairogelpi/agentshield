@@ -26,9 +26,14 @@ async def receipt(req: ReceiptRequest):
     tenant_id = payload.get("tid")
     cost_center = payload.get("cc")
     auth_id = payload.get("pol") # ID de la autorización original
+    function_id = payload.get("fid") # ID de la función (si existe)
     
     if not tenant_id or not cost_center:
          raise HTTPException(status_code=400, detail="Malformed Token Payload")
+
+    # Inyectar function_id en metadata para que el worker lo procese
+    if function_id:
+        req.metadata["function_id"] = function_id
 
     # 2. Delegar en Servicio de Facturación
     # Esto maneja la firma, la inserción en DB y la actualización de Redis

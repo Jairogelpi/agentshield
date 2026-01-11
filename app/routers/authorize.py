@@ -1,11 +1,11 @@
-# app/routers/authorize.py
 import hashlib
 import json
 import os
+import uuid # For function_id logic
 from fastapi import APIRouter, Header, HTTPException, Depends, Security, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.models import AuthorizeRequest, AuthorizeResponse
-from app.db import supabase, redis_client
+from app.db import supabase, redis_client, get_function_config
 from app.logic import create_aut_token, get_active_policy
 from app.webhooks import trigger_webhook
 from datetime import datetime
@@ -125,7 +125,36 @@ async def authorize_transaction(
     # 0. Contexto
     policy = await get_active_policy(tenant_id)
     current_spend = await get_current_spend(tenant_id, req.cost_center_id)
-    
+
+    # 1. LÓGICA DE FUNCTION ID (Override & Control)
+    if req.function_id:
+        func_conf = await get_function_config(tenant_id, req.function_id)
+        
+        if func_conf:
+            # A. Check Active (Panic Button)
+            if not func_conf.get('is_active', True):
+                 return AuthorizeResponse(
+                    decision="DENIED", 
+                    reason_code="FUNCTION_DISABLED_BY_ADMIN", 
+                    authorization_id=str(uuid.uuid4())
+                )
+            
+            # B. Model Swapping (El Cambiazo)
+            if func_conf.get('force_model'):
+                req.model = func_conf['force_model']
+            if func_conf.get('force_provider'):
+                req.provider = func_conf['force_provider']
+                
+            # C. Budget Check
+            budget = func_conf.get('budget_daily', 0)
+            spent = func_conf.get('current_spend_daily', 0)
+            if budget > 0 and spent >= budget:
+                 return AuthorizeResponse(
+                    decision="DENIED", 
+                    reason_code="FUNCTION_BUDGET_EXCEEDED", 
+                    authorization_id=str(uuid.uuid4())
+                )
+
     # Check Panic Mode
     if policy.get("panic_mode", False):
          return AuthorizeResponse(
@@ -332,6 +361,7 @@ async def authorize_transaction(
         "tid": tenant_id,
         "cc": req.cost_center_id,
         "pol": auth_id,
+        "fid": req.function_id, # Link al presupuesto de la función
         # Si cambiamos modelo, el recibo deberia reflejarlo? 
         # El token es agnóstico del modelo, pero autoriza el gasto.
         "est": cost_estimated,

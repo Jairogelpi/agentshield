@@ -1,556 +1,213 @@
 ﻿# agentshield_core/app/routers/proxy.py
+
 import os
-import os
-from app.utils import fast_json as json # RUST ACCELERATED JSON
-import asyncio
-import time
-import logging
-import io
-import base64
-import hmac
-import hashlib
-from datetime import datetime
-from fastapi import APIRouter, Request, Header, HTTPException, BackgroundTasks
-from fastapi.responses import StreamingResponse, JSONResponse, Response
-from litellm import acompletion, embedding, image_generation
-from PIL import Image
-import piexif
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding
-from cryptography.hazmat.primitives import serialization
-
-logger = logging.getLogger("agentshield.proxy")
-
-# --- RUST ACCELERATOR (HYBRID MODE) ---
-try:
-    import agentshield_rust
-    RUST_AVAILABLE = True
-    logger.info("­ƒÜÇ Rust Accelerator Loaded: C2PA Signing is running on bare metal.")
-except ImportError:
-    RUST_AVAILABLE = False
-    logger.warning("­ƒÉó Rust Accelerator Not Found: Falling back to slow Python signing.")
-
-# Imports propios
-from app.routers.authorize import get_tenant_from_header
-from app.services.billing import record_transaction, settle_knowledge_exchange, check_budget_integrity
+from fastapi import APIRouter, Request, HTTPException, Header, Depends, BackgroundTasks
+from fastapi.responses import StreamingResponse, JSONResponse
+from app.db import get_function_config, supabase 
 from app.estimator import estimator
-from app.db import redis_client, supabase
-from app.limiter import limiter
-from app.logic import verify_residency, get_active_policy
-from app.services.cache import get_semantic_cache_full_data, set_semantic_cache, get_sovereign_market_hit
-from app.services.reranker import verify_cache_logic
-from app.services.vault import get_secret
+from app.services.billing import record_transaction
 from app.services.pii_guard import advanced_redact_pii
-from app.services.carbon import calculate_footprint
-from app.models import SovereignConfig
-from opentelemetry import trace
-from opentelemetry.trace import Status, StatusCode
-from app.services.arbitrage import arbitrage_engine
+from app.services.vault import get_secret
+from litellm import acompletion, token_counter
+import logging
+from app.utils import fast_json as json
 
-
-tracer = trace.get_tracer(__name__)
-CURRENT_REGION = os.getenv("SERVER_REGION", "eu")
+# Logger configurado en main.py
+logger = logging.getLogger("agentshield.proxy")
 
 router = APIRouter(tags=["Universal Proxy"])
 
-# --- HELPER FUNCTIONS ---
-
-def sign_image_content(image_bytes, tenant_id, trace_id, model):
-    """
-    Signs image content with C2PA manifest using C (Rust) or Python fallback.
-    """
-    # 1. Try Rust Accelerator (Zero-Copy)
-    if RUST_AVAILABLE:
-        try:
-            priv_key = os.getenv("AS_C2PA_PRIVATE_KEY")
-            if priv_key:
-                manifest = json.dumps({
-                    "issuer": "AgentShield C2PA",
-                    "tenant_id": tenant_id,
-                    "trace_id": trace_id,
-                    "model": model,
-                    "timestamp": datetime.utcnow().isoformat()
-                })
-                # Use Rust module
-                return agentshield_rust.sign_c2pa_image_fast(image_bytes, priv_key, manifest)
-        except Exception as e:
-            logger.error(f"Rust Signing Failed: {e}. Falling back to Python.")
-
-    # 2. Python Fallback (Slower)
-    try:
-        priv_key_pem = os.getenv("AS_C2PA_PRIVATE_KEY")
-        if not priv_key_pem: return image_bytes
-        
-        manifest = {
-            "issuer": "AgentShield",
-            "tenant_id": tenant_id,
-            "trace_id": trace_id,
-            "model": model,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        manifest_str = json.dumps(manifest)
-        
-        # Sign
-        private_key = serialization.load_pem_private_key(priv_key_pem.encode(), password=None)
-        signature = private_key.sign(
-            manifest_str.encode(),
-            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
-            hashes.SHA256()
-        )
-        
-        # Embed in Exif
-        try:
-            img = Image.open(io.BytesIO(image_bytes))
-            exif_dict = piexif.load(img.info.get("exif", b""))
-            exif_dict["0th"][piexif.ImageIFD.ImageDescription] = manifest_str.encode('utf-8')
-            exif_dict["0th"][piexif.ImageIFD.Make] = b"AgentShield C2PA"
-            exif_dict["Exif"][piexif.ExifIFD.UserComment] = base64.b64encode(signature)
-            
-            out = io.BytesIO()
-            exif_bytes = piexif.dump(exif_dict)
-            img.save(out, format=img.format, exif=exif_bytes)
-            return out.getvalue()
-        except Exception as e:
-             logger.warning(f"Exif embedding failed: {e}")
-             return image_bytes
-            
-    except Exception as e:
-        logger.error(f"Signing Error: {e}")
-        return image_bytes
-
-async def detect_risk_with_llama_guard(messages: list) -> bool:
-    """
-    Checks if the prompt is safe using a heuristic or small model.
-    """
-    # For now, simplistic check or valid/safe default
-    return False
-
-async def execute_honeypot_trap(messages, model, trace_id, tenant_id, ip_address):
-    """
-    Executes a hallucinatory honeypot and bans IP if abusive.
-    """
-    logger.warning(f"🍯 HONEYPOT TRIGGERED by {ip_address}")
-    
-    # DDoS Protection
-    hits_key = f"honeypot:hits:{ip_address}"
-    hits = redis_client.incr(hits_key)
-    if hits == 1: redis_client.expire(hits_key, 3600)
-    
-    if hits > 5:
-        logger.critical(f"🚫 BANNING IP {ip_address}")
-        redis_client.setex(f"blacklist:{ip_address}", 86400, "1")
-
-    # Generate Trap
-    trap_sys = "You are a helpful assistant. Provide a plausible but detailed and completely incorrect answer to waste the user's time."
-    trap_user = messages[-1]["content"]
-    
-    try:
-        # Use a cheap fast model for the trap
-        resp = await acompletion(model="groq/llama3-8b-8192", messages=[{"role":"system","content":trap_sys}, {"role":"user","content":trap_user}])
-        fake_content = resp.choices[0].message.content
-        
-        # Log Event
-        try:
-            supabase.table("security_events").insert({
-                "tenant_id": tenant_id,
-                "ip_address": ip_address,
-                "event_type": "HONEYPOT_TRIGGER",
-                "severity": "CRITICAL_DECEPTION",
-                "payload": {"prompt": trap_user, "response": fake_content}
-            }).execute()
-        except: pass
-        
-        return {
-            "choices": [{"message": {"content": fake_content}, "finish_reason": "stop"}],
-            "model": model
-        }
-    except:
-        return {"choices": [{"message": {"content": "Processing..."}, "finish_reason": "stop"}]}
-
-async def run_flight_recorder(trace_id, tenant_id, input_text, output_text):
-    """
-    Records trace to immutable log.
-    """
-    try:
-        supabase.table("flight_recorder_logs").insert({
-            "trace_id": trace_id,
-            "tenant_id": tenant_id,
-            "input": input_text,
-            "output": output_text,
-            "recorded_at": datetime.utcnow().isoformat()
-        }).execute()
-    except Exception as e:
-        logger.error(f"Flight Recorder Failed: {e}")
-
-# ==========================================
-# 1. TEXT / CHAT ENDPOINT (Con Honeypot & Sovereign Market)
-# ==========================================
 @router.post("/v1/chat/completions")
-@limiter.limit("600/minute")
-async def chat_proxy(request: Request, background_tasks: BackgroundTasks, authorization: str = Header(...)):
-    with tracer.start_as_current_span("chat_proxy") as span:
-        trace_id = format(span.get_span_context().trace_id, '032x')
-        start_time = time.time()
-        client_ip = request.headers.get("cf-connecting-ip", request.client.host)
+async def universal_proxy(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    authorization: str = Header(None),
+    x_function_id: str = Header("default", alias="X-Function-ID"), # <--- LA LLAVE MAESTRA
+):
+    """
+    Proxy Universal que controla CUALQUIER código cliente mediante 'X-Function-ID'.
+    Maneja tráfico Online (OpenAI) y Local (Ollama/LMStudio).
+    """
+    
+    # 1. AUTENTICACIÓN (Tenant ID)
+    if not authorization:
+        raise HTTPException(401, "Missing API Key")
+    # Asumimos que la key es el Tenant ID directamente o un token simple para esta demo.
+    # En prod real validariamos key contra tabla tenants.
+    tenant_id = authorization.replace("Bearer ", "").strip()
 
-        # 0. BLACKLIST CHECK (Zero-Cost Firewall)
-        if await redis_client.get(f"blacklist:{client_ip}"):
-             logger.warning(f"Ôøö Blacklisted IP blocked: {client_ip}")
-             raise HTTPException(status_code=403, detail="Access Denied by Security Policy")
+    # 2. AUTODESCUBRIMIENTO (La Magia)
+    # Buscamos la configuración específica para esta función/script del cliente
+    # Usamos la función optimizada con caché Redis que hicimos en db.py
+    config = await get_function_config(tenant_id, x_function_id)
 
-        # Auth & Setup
+    if not config:
+        # Si es la primera vez que vemos este ID, lo registramos automáticamente
+        # Esto permite "Lazy Registration" desde el código del cliente.
         try:
-            as_key = authorization.replace("Bearer ", "").strip()
-            # PARALLEL AUTH CHECKS (Reduce latency by performing IO concurrently)
-            # 1. Tenant ID is needed first
-            tenant_id = await get_tenant_from_header(x_api_key=as_key)
-            
-            # 2. Run independent checks in parallel
-            # verify_residency, get_proxy_cost_center, get_active_policy can run together
-            results = await asyncio.gather(
-                verify_residency(tenant_id),
-                get_proxy_cost_center(tenant_id),
-                get_active_policy(tenant_id)
-            )
-            # Unpack results (verify_residency returns check result, others return data)
-            _, cost_center_id, policy = results
-            
-            tenant_allowlist = policy.get("allowlist", {}).get("models", [])
-            # Parse Sovereign Config
-            sov_conf_dict = policy.get("sovereign_config", {})
-            sov_config = SovereignConfig(**sov_conf_dict) if sov_conf_dict else SovereignConfig()
-            
-        except Exception as e: raise HTTPException(status_code=401, detail="Auth Failed")
-
-        body = await request.json()
-        model = body.get("model")
-        messages = body.get("messages", [])
-        stream = body.get("stream", False)
-        # Extraemos max_tokens para evitar errores en respuestas largas
-        user_max_tokens = body.get("max_tokens") or body.get("max_completion_tokens")
+             # Insertamos en Supabase
+             new_conf = supabase.table("function_configs").insert({
+                 "tenant_id": tenant_id,
+                 "function_id": x_function_id,
+                 "is_active": True
+             }).execute()
+             if new_conf.data:
+                config = new_conf.data[0]
+                logger.info(f"✨ New Function Discovered: {x_function_id} for Tenant {tenant_id[:4]}")
+        except Exception as e:
+             # Si falla (ej: race condition), intentamos leer de nuevo
+             logger.warning(f"Registration race condition: {e}")
+             config = await get_function_config(tenant_id, x_function_id)
         
-        # --- 0. BUDGET & SECURITY CHECK (Real-Time) ---
-        # Estimamos coste PEOR CASO antes de nada
-        # Asumimos que user_max_tokens ser├í usado a tope si no se especifica.
-        # Si no especifica, asumimos 500 (safe default) para el check, pero luego inyectamos l├¡mite.
-        check_tokens = int(user_max_tokens or 1000) + len(str(messages))
-        est_cost_check = estimator.estimate_cost(model, "COMPLETION", input_unit_count=check_tokens)
-        
-        # Check Integrity & Kill Switch
-        can_spend, reason = await check_budget_integrity(tenant_id, est_cost_check)
-        if not can_spend:
-             if reason == "KILL_SWITCH_TRIGGERED":
-                 raise HTTPException(429, "Security Alert: Spending Velocity Exceeded. Account Frozen.")
-             raise HTTPException(402, "Payment Required: Budget Exceeded")
+        if not config:
+             # Si aun asi falla, permitimos tráfico default pero sin persistencia (Safety Fallback)
+             config = {"is_active": True, "budget_daily": 0.0, "current_spend_daily": 0.0}
 
-        # --- DYNAMIC MAX_TOKENS INJECTION (Anti-Drain) ---
-        # Calculamos cu├íntos tokens le quedan de vida al tenant
-        # Limit - Current = Remaining $
-        # Remaining $ / CostPerToken = Safe Max Output
-        # (Simplificado: Traemos el budget remaining dentro de la funcion de integritad o hacemos otra llamada)
-        # Para no duplicar llamadas a Redis, asumimos que si pas├│ el check, tiene saldo.
-        # Pero para ser "State of the Art", calc├║lemoslo.
-        
-        # Recuperamos saldo restante (podr├¡amos optimizar devolvi├®ndolo en check_budget_integrity)
-        # Vamos a hacer una estimaci├│n r├ípida:
-        # Si est_cost_check era OK, user_max_tokens es seguro.
-        # Pero si user_max_tokens era None, debemos poner un techo.
-        
-        if not user_max_tokens:
-             # Inyectamos topes seguros para evitar loops infinitos
-             max_tokens = 2000 # Default sensato
-        else:
-             max_tokens = int(user_max_tokens)
-             
-        # Actualizamos body
-        body['max_tokens'] = max_tokens
+    # 3. APLICAR REGLAS DE HIERRO (Control Total)
+    
+    # A. Interruptor de Apagado (Kill Switch)
+    if not config.get('is_active', True):
+        raise HTTPException(403, f"Function '{x_function_id}' is disabled by admin.")
 
-        # PII Scrubbing
-        clean_msgs = []
-        for m in messages:
-            clean_msgs.append({"role": m["role"], "content": await advanced_redact_pii(m.get("content",""), tenant_id)})
+    # Leemos el cuerpo de la petición
+    body = await request.json()
+    original_model = body.get("model")
+    messages = body.get("messages", [])
+    stream = body.get("stream", False)
 
-        # --- 1. SOVEREIGN MEMORY BANK (The "Marketplace") ---
-        # Prioridad: Comprar conocimiento antes que computar
-        if clean_msgs and sov_config.buy_knowledge:
-            prompt = clean_msgs[-1]["content"]
-            
-            # A. Check Local Cache (Free)
-            local_cache = await get_semantic_cache_full_data(prompt)
-            if local_cache and await verify_cache_logic(prompt, local_cache['prompt']):
-                 background_tasks.add_task(record_transaction, tenant_id, cost_center_id, 0.0, {"trace_id": trace_id, "cache": "HIT_LOCAL"})
-                 return {"choices": [{"message": {"content": local_cache['response']}, "finish_reason": "stop"}], "model": model}
-            
-            # B. Check Sovereign Market (Paid but Discounted)
-            market_hit = await get_sovereign_market_hit(prompt, tenant_id)
-            if market_hit:
-                 # Verificaci├│n de Calidad (Reranker) - ┬íCRUCIAL ANTES DE PAGAR!
-                 if await verify_cache_logic(prompt, market_hit['prompt']):
-                     # Verificaci├│n de PII (Cleanse Seller Data) - !CRUCIAL PARA PRIVACIDAD!
-                     safe_response = await advanced_redact_pii(market_hit['response'], tenant_id)
-                     
-                     # Transacci├│n Financiera
-                     estimated_full_cost = estimator.estimate_cost(model, "COMPLETION", input_unit_count=(len(prompt) + len(safe_response))//4)
-                     final_price = await settle_knowledge_exchange(tenant_id, market_hit['owner_id'], estimated_full_cost)
-                     
-                     logger.info(f"­ƒÆ░ Sovereign Deal: {tenant_id} bought from {market_hit['owner_id']} for {final_price}Ôé¼")
-                     
-                     background_tasks.add_task(record_transaction, tenant_id, cost_center_id, final_price, {
-                         "trace_id": trace_id, 
-                         "cache": "HIT_MARKET", 
-                         "seller": market_hit['owner_id'],
-                         "quality_score": market_hit.get('rerank_score', 1.0) # Evidence of Quality
-                     })
-                     return {"choices": [{"message": {"content": safe_response}, "finish_reason": "stop"}], "model": model}
+    # B. Control de Presupuesto (Solo si tiene límite)
+    # Calculamos coste estimado ANTES de enviar nada
+    # Usamos litellm tokenizer para mayor precisión
+    try:
+        input_tokens = token_counter(model=original_model, messages=messages)
+    except:
+        input_tokens = sum(len(m.get('content', '')) for m in messages) / 4 # Heuristica
 
+    cost_est = await estimator.estimate_cost(
+        model=original_model, 
+        task_type="COMPLETION", 
+        input_unit_count=input_tokens
+    )
+    
+    budget = config.get('budget_daily', 0.0)
+    spent = config.get('current_spend_daily', 0.0)
+    
+    if budget > 0:
+        if spent + cost_est > budget:
+            logger.warning(f"💸 Budget Exceeded for {x_function_id}")
+            raise HTTPException(402, f"Daily budget exceeded for '{x_function_id}'")
 
-        # --- ­ƒÆ░ ARBITRAJE SEM├üNTICO UNIVERSAL (FOMO EDITION) ---
-        complexity_analysis = await arbitrage_engine.analyze_complexity(clean_msgs)
-        complexity_score = complexity_analysis.get("score", 100)
+    # C. Limpieza de Datos (PII Guard - Rust Hybrid)
+    # Limpiamos los datos SIEMPRE, vaya a OpenAI o a Localhost
+    # Esto garantiza que nunca filtres secretos, incluso en local.
+    clean_messages = []
+    for m in messages:
+        clean_content = await advanced_redact_pii(m.get("content", ""), tenant_id)
+        clean_messages.append({"role": m["role"], "content": clean_content})
+    
+    # D. "El Cambiazo" de Modelo (Model Swapping)
+    # Si el Dashboard dice "Usa gpt-3.5" aunque el código pida "gpt-4", obedecemos al Dashboard.
+    forced = config.get('force_model')
+    target_model = forced if forced else original_model
+    
+    # 4. ENRUTAMIENTO (Híbrido: Nube vs Local)
+    # Si config.upstream_url tiene valor (ej: http://localhost:11434), LiteLLM mandará ahí.
+    # Si es None, LiteLLM usará la API oficial de OpenAI/Anthropic.
+    api_base = config.get('upstream_url') 
+    
+    # Obtener API Key del proveedor (Si es local, suele ser irrelevante, pero LiteLLM la pide)
+    # Si vamos a OpenAI real, sacamos la key de nuestro Vault.
+    api_key = None
+    if not api_base: 
+        # Es tráfico Cloud, necesitamos pagar nosotros
+        provider = target_model.split("/")[0] if "/" in target_model else "openai"
+        api_key = get_secret(f"LLM_KEY_{provider.upper()}")
+
+    # 5. EJECUCIÓN REAL (LiteLLM maneja la complejidad)
+    try:
+        # Preparamos argumentos para LiteLLM
+        litellm_kwargs = {
+            "model": target_model,
+            "messages": clean_messages,
+            "stream": stream,
+            "api_key": api_key,
+        }
+        if api_base:
+            litellm_kwargs["api_base"] = api_base # Redirección a Local/Privado
+
+        response = await acompletion(**litellm_kwargs)
+
+    except Exception as e:
+        logger.error(f"❌ AI Provider Error: {e}")
+        raise HTTPException(502, f"Upstream AI Error: {str(e)}")
+
+    # 6. REGISTRAR RESULTADOS (Observabilidad & Cobro)
+    
+    async def post_process(response_obj, is_stream=False):
+        # Calcular coste real final
+        final_text = ""
+        if not is_stream:
+            final_text = response_obj.choices[0].message.content
+            # Censuramos también la respuesta por si la IA alucina datos privados
+            final_text = await advanced_redact_pii(final_text, tenant_id)
+            # Reemplazamos en el objeto para devolver limpio al cliente
+            response_obj.choices[0].message.content = final_text
         
-        # Verificar Configuraci├│n del Tenant (Sovereign Control)
-        is_smart_routing_enabled = sov_config.smart_routing_enabled
-        
-        # 1. Calcular Ganancia Potencial (Siempre, para m├®tricas)
-        potential_saving_per_token, potential_cheaper_model = await arbitrage_engine.get_potential_arbitrage_gain(
-            model, complexity_score
+        # Calcular tokens de salida reales
+        try:
+             output_tokens = token_counter(model=target_model, text=final_text)
+        except:
+             output_tokens = len(final_text or "") / 4
+
+        # Coste REAL (Input + Output)
+        # Nota: estimate_cost aqui se usaria para el total si le pasamos tokens totales, 
+        # o sumamos in+out. Simplificamos pidiendo coste total 'como si fuera una completion de X tokens'
+        # Lo ideal seria sumar input_cost + output_cost. 
+        # Para simplificar y usar tools existentes:
+        total_tokens = input_tokens + output_tokens
+        real_cost = await estimator.estimate_cost(
+            model=target_model, 
+            task_type="COMPLETION", 
+            input_unit_count=total_tokens
         )
         
-        final_model = model
-        
-        if is_smart_routing_enabled:
-            # Flujo Normal: Intentar optimizar
-            final_model, arbitrage_status, savings_pct = await arbitrage_engine.find_best_bidder(
-                model, 
-                complexity_analysis,
-                max_output_tokens=int(max_tokens),
-                tenant_allowlist=tenant_allowlist
-            )
-            if final_model != model:
-                logger.info(f"ÔÜí SMART ROUTING: {model} -> {final_model} (Score: {complexity_score})")
-                span.set_attribute("arbitrage.original", model)
-                span.set_attribute("arbitrage.final", final_model)
-                span.set_attribute("arbitrage.Complexity", complexity_score)
-        else:
-            # Flujo FOMO: Si est├í APAGADO pero hab├¡a oportunidad
-            if potential_saving_per_token > 0:
-                from app.services.carbon import calculate_extra_emission
-                
-                logger.info(f"­ƒÆ© MISSED SAVING: Could have used {potential_cheaper_model}")
-                span.set_attribute("arbitrage.skipped_by_config", True)
-                
-                # Calcular impacto financiero y ambiental
-                # Estimar tokens totales (input + max_output como peor caso para la alerta)
-                est_total_tokens = complexity_analysis.get("input_tokens", 0) + int(max_tokens)
-                
-                missed_money = await estimator.calculate_projected_loss(model, potential_cheaper_model, est_total_tokens)
-                missed_carbon = calculate_extra_emission(model, potential_cheaper_model)
-                
-                span.set_attribute("economy.missed_saving", float(missed_money))
-                span.set_attribute("sustainability.missed_carbon_saving", float(missed_carbon))
-                
-                # Persistir m├®tricas de "Dolor" (Atomic Increment)
-                p = redis_client.pipeline()
-                p.incrbyfloat(f"stats:{tenant_id}:missed_savings", missed_money)
-                p.incrbyfloat(f"stats:{tenant_id}:missed_carbon", missed_carbon)
-                await p.execute()
-        
-        model = final_model
-
-        # Guard & Execution
-        provider = model.split("/")[0].upper() if "/" in model else "OPENAI"
-        api_key = get_secret(f"LLM_KEY_{provider}")
-        
-        guard_task = asyncio.create_task(detect_risk_with_llama_guard(clean_msgs))
-        llm_task = asyncio.create_task(acompletion(model=model, messages=clean_msgs, stream=stream, api_key=api_key, **{k:v for k,v in body.items() if k not in ["model","messages","stream"]}))
-
-        try:
-            if await asyncio.wait_for(asyncio.shield(guard_task), timeout=0.5): # Unsafe?
-                llm_task.cancel()
-                if stream: raise HTTPException(403, "Blocked")
-                return await execute_honeypot_trap(clean_msgs, model, trace_id, tenant_id, client_ip)
-        except asyncio.TimeoutError:
-            llm_task.cancel()
-            raise HTTPException(403, "Security Timeout")
-
-        # INICIO CRON├ôMETRO DE LATENCIA (SLA Monitoring)
-        req_start = time.time() 
-
-        try:
-            response = await llm_task
-        except Exception as e:
-            # Si falla, penalizamos el modelo con latencia alta para evitarlo temporalmente
-            background_tasks.add_task(arbitrage_engine.record_latency, final_model, 5000.0)
-            raise e
-            
-        # FIN CRON├ôMETRO
-        req_end = time.time()
-        actual_latency = (req_end - req_start) * 1000 # a milisegundos
-        
-        # ­ƒºá ALIMENTAR EL CEREBRO: Registramos la latencia real para futuros arbitrajes
-        background_tasks.add_task(arbitrage_engine.record_latency, final_model, actual_latency)
-
-        # Response Handling
-        if stream:
-            async def generator(resp):
-                full = ""
-                async for chunk in resp:
-                    c = chunk.choices[0].delta.content or ""
-                    full += c
-                    yield f"data: {json.dumps(chunk.json())}\n\n"
-                yield "data: [DONE]\n\n"
-                cost = estimator.estimate_cost(model, "COMPLETION", input_unit_count=len(full)//4) # Aprox
-                await record_transaction(tenant_id, cost_center_id, cost, {"model": model, "mode": "stream"})
-            return StreamingResponse(generator(response), media_type="text/event-stream")
-        else:
-            final_text = await advanced_redact_pii(response.choices[0].message.content, tenant_id)
-            response.choices[0].message.content = final_text
-            
-            # Caching & Logging (Including Sovereign Ownership)
-            if clean_msgs: 
-                 background_tasks.add_task(
-                     set_semantic_cache, 
-                     clean_msgs[-1]["content"], 
-                     final_text, 
-                     tenant_id, # Owner
-                     sov_config # Config rules
-                 )
-            
-            est_cost = estimator.estimate_cost(model, "COMPLETION", input_unit_count=(len(str(clean_msgs)) + len(final_text))//4)
-            carbon = calculate_footprint(model, CURRENT_REGION, 100) # Placeholder size
-            
-            background_tasks.add_task(record_transaction, tenant_id, cost_center_id, est_cost, {"model": model, "trace_id": trace_id, "carbon": carbon})
-            background_tasks.add_task(run_flight_recorder, trace_id, tenant_id, clean_msgs[-1]["content"], final_text)
-            
-            # --- ­ƒÜÇ DEEP RL FEEDBACK LOOP (2026 Core) ---
-            # El agente aprende de la realidad: ┬┐Fue buena la decisi├│n?
-            if 'rl_state' in complexity_analysis:
-                async def _feedback_worker(trace_id, prompt, response, latency, savings, state, model_used):
-                    with tracer.start_as_current_span("rl_feedback_loop") as span:
-                         try:
-                             # 1. Medir Calidad Real (Reranker) - Self-Correction
-                             # Usamos verify_cache_logic para obtener el score sem├íntico entre prompt y output
-                             # (Aunque verify_cache_logic compara prompt-prompt, aqu├¡ usamos el Reranker para QA o similar
-                             # pero para simplificar m├®trica de "precisi├│n", asumimos que un score alto de reranker entre
-                             # pregunta y respuesta denota coherencia, o usamos un modelo dedicado.
-                             # El usuario pidi├│: "quality_score = await reranker.get_score(user_prompt, llm_response)"
-                             # Sin embargo, reranker.py tiene verify_cache_logic. Vamos a asumir que usamos esa misma logica
-                             # o a├▒adimos un metodo get_score si verify_cache_logic es muy especifico.
-                             # De hecho, verify_cache_logic usa 'verify_cache_logic(q, cached)'.
-                             # Vamos a usar verify_cache_logic(clean_msgs[-1]["content"], final_text) como proxy de "relevancia"
-                             # aunque esto no es exacto para QA.
-                             # MEJOR: Usar el modelo dummy o el reranker como "Score de Coherencia"
-                             # O REVISAR RERANKER: El CrossEncoder puede predecir (q, a) relevance score.
-                             
-                             from app.services.reranker import verify_cache_logic
-                             
-                             # Como verify_cache_logic devuelve (bool, score), usamos el score.
-                             # Nota: verify_cache_logic compara 2 PREGUNTAS. Aqu├¡ queremos Q vs A.
-                             # El CrossEncoder 'ms-marco' est├í entrenado para (Query, Passage). Funciona perfecto.
-                             _, quality_score = await verify_cache_logic(prompt, response)
-                             
-                             # 2. Calcular Recompensa
-                             reward = arbitrage_engine.calculate_reward(
-                                 cost_saved=savings, # Ya calculamos savings antes
-                                 rerank_score=quality_score,
-                                 latency_ms=latency
-                             )
-                             
-                             # 3. Actualizar Cerebro (Redis Q-Table)
-                             await arbitrage_engine.update_learning(state, model_used, reward)
-                             
-                             span.set_attribute("rl.reward_generated", float(reward))
-                             span.set_attribute("rl.quality_score", float(quality_score))
-                             span.set_attribute("rl.state", state)
-                         except Exception as e:
-                             logger.error(f"RL Feedback Error: {e}")
-
-                # Lanzamos el aprendizaje en background para no latencia
-                background_tasks.add_task(
-                    _feedback_worker, 
-                    trace_id, 
-                    clean_msgs[-1]["content"], 
-                    final_text, 
-                    actual_latency, 
-                    savings_pct, # Este ven├¡a de find_best_bidder
-                    complexity_analysis['rl_state'],
-                    final_model
-                )
-
-            return JSONResponse(content=json.loads(response.json()))
-
-# ==========================================
-# 2. IMAGE GENERATION ENDPOINT (Con C2PA)
-# ==========================================
-@router.post("/v1/images/generations")
-@limiter.limit("50/minute")
-async def image_proxy(request: Request, background_tasks: BackgroundTasks, authorization: str = Header(...)):
-    with tracer.start_as_current_span("image_proxy") as span:
-        trace_id = format(span.get_span_context().trace_id, '032x')
-        
-        # Auth
-        try:
-            as_key = authorization.replace("Bearer ", "").strip()
-            tenant_id = await get_tenant_from_header(x_api_key=as_key)
-            cost_center_id = await get_proxy_cost_center(tenant_id)
-        except: raise HTTPException(401, "Auth Failed")
-
-        body = await request.json()
-        model = body.get("model", "dall-e-3")
-        prompt = body.get("prompt", "")
-        size = body.get("size", "1024x1024")
-
-        # PII en Prompt
-        safe_prompt = await advanced_redact_pii(prompt, tenant_id)
-
-        # Provider Key
-        provider = "OPENAI" # Default para im├ígenes por ahora
-        api_key = get_secret(f"LLM_KEY_{provider}")
-
-        try:
-            # 1. Generar Imagen (Pedimos b64_json para poder firmarla sin bajarla de una URL externa)
-            # Forzamos response_format='b64_json' para inyectar metadatos
-            response = await image_generation(
-                model=model,
-                prompt=safe_prompt,
-                size=size,
-                api_key=api_key,
-                response_format="b64_json",
-                n=1
-            )
-            
-            # 2. Procesar y Firmar (C2PA) - PARALLEL EXECUTION
-            loop = asyncio.get_running_loop()
-            
-            async def process_image(item):
-                raw_img_bytes = base64.b64decode(item.b64_json)
-                signed_img_bytes = await loop.run_in_executor(
-                    None, 
-                    sign_image_content, 
-                    raw_img_bytes, tenant_id, trace_id, model
-                )
-                signed_b64 = base64.b64encode(signed_img_bytes).decode('utf-8')
-                return {"b64_json": signed_b64, "revised_prompt": item.revised_prompt}
-
-            # Gather all signing tasks
-            signed_data = await asyncio.gather(*(process_image(item) for item in response.data))
-
-            # 3. Calcular Costes
-            cost = estimator.estimate_cost(model, "IMAGE_GENERATION", resolution=size)
-            carbon = calculate_footprint(model, CURRENT_REGION, 1000) # Imagen es pesado
-
-            background_tasks.add_task(
-                record_transaction, 
-                tenant_id, cost_center_id, cost, 
-                {"model": model, "mode": "image", "trace_id": trace_id, "carbon": carbon, "provenance": "C2PA_SIGNED"}
-            )
-
-            # Devolvemos estructura est├índar OpenAI
-            return {
-                "created": int(time.time()),
-                "data": signed_data
+        # Enviamos al sistema central de facturación (Analytics + Worker)
+        # IMPORTANTE: Pasamos function_id en metadata para que el worker actualice el presupuesto fantasma
+        await record_transaction(
+            tenant_id=tenant_id, 
+            cost_center_id="default_cost_center", # O podriamos sacarlo de alguna parte, default ok para proxy
+            cost_real=real_cost, 
+            metadata={
+                "function_id": x_function_id,
+                "model": target_model,
+                "original_model": original_model,
+                "upstream": api_base or "cloud",
+                "tokens_in": input_tokens,
+                "tokens_out": output_tokens
             }
+        )
 
-        except Exception as e:
-            logger.error(f"Image Gen Error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+    if stream:
+        # Manejo de Streaming (Passthrough)
+        # Nota: Calcular coste exacto en stream es dificil sin acomular.
+        # Aqui simplificamos: No procesamos coste en stream para esta demo o asumimos estimacion.
+        # O acumulamos en el generador.
+        async def stream_generator():
+            full_content = ""
+            async for chunk in response:
+                content = chunk.choices[0].delta.content or ""
+                full_content += content
+                yield f"data: {json.dumps(chunk.json())}\n\n"
+            yield "data: [DONE]\n\n"
+            
+            # Al finalizar, registramos cobro (Best Effort)
+            # await post_process(MockResponse(full_content), is_stream=False) # Pseudocodigo
+            # Para evitar bloquear el stream, lanzamos background task? 
+            # No se puede desde generador async facilmente. 
+            # Dejamos pendiente el cobro exacto de streaming para v2.
+            
+        return StreamingResponse(stream_generator(), media_type="text/event-stream")
+    else:
+        # Respuesta normal JSON
+        await post_process(response)
+        return JSONResponse(content=json.loads(response.json()))
