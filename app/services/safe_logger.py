@@ -1,5 +1,5 @@
 import logging
-from app.services.pii_guard import advanced_redact_pii
+from app.services.pii_guard import redact_pii_sync
 
 class PIIRedactionFilter(logging.Filter):
     """
@@ -13,7 +13,7 @@ class PIIRedactionFilter(logging.Filter):
             # o si el mensaje es sospechosamente largo (posible prompt dump)
             if record.levelno >= logging.ERROR or len(record.msg) > 100:
                 try:
-                    record.msg = advanced_redact_pii(record.msg)
+                    record.msg = redact_pii_sync(record.msg)
                 except:
                     # Fail-safe: Si falla PII guard, mejor no loguear el contenido original
                     record.msg = "[LOG REDACTION FAILED - CONTENT HIDDEN FOR SAFETY]"
@@ -24,7 +24,7 @@ class PIIRedactionFilter(logging.Filter):
             for arg in record.args:
                 if isinstance(arg, str):
                     try:
-                        new_args.append(advanced_redact_pii(arg))
+                        new_args.append(redact_pii_sync(arg))
                     except:
                         new_args.append("<REDACTED_ARG>")
                 else:
