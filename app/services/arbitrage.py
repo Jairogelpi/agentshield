@@ -205,3 +205,50 @@ class AgentShieldRLArbitrator:
         return 0.0, original_model
 
 arbitrage_engine = AgentShieldRLArbitrator()
+
+async def get_best_provider(target_quality: str, max_latency_ms: int = 2000, messages: list = [], input_tokens: int = 0) -> dict:
+    """
+    Public façade for the Arbitrage Engine.
+    Used by the Proxy to determine if we should swap the model.
+    """
+    try:
+        # 1. Analyze Complexity (AI Judge)
+        # Only analyze if we have messages and it's worth it (e.g. not trivial ping)
+        analysis = {}
+        if messages:
+            # We use the internal engine to analyze prompt complexity
+            # This helps decide if we can downgrade to a cheaper model safely
+            analysis = await arbitrage_engine.analyze_complexity(messages)
+        else:
+            # Fallback for when we don't want to parse messages deep
+            analysis = {"score": 50, "input_tokens": input_tokens} # Default to 'Medium'
+            
+        # 2. Ask the Bandit (RL) who is the best provider right now
+        winner_id, reason, savings = await arbitrage_engine.find_best_bidder(
+            requested_model=target_quality,
+            analysis=analysis
+        )
+        
+        if winner_id != target_quality:
+            # We found a better option!
+            # We need to find the API base for this winner (Logic simplistic here, 
+            # ideally find_best_bidder returns the full object)
+            
+            # Re-fetch models to get details (cached in Redis inside the class)
+            market = await arbitrage_engine._get_market_models()
+            winner_obj = next((m for m in market if m['model'] == winner_id), None)
+            
+            if winner_obj:
+                logger.info(f"💰 Arbitrage Opportunity: {target_quality} -> {winner_id} (Reason: {reason}, Est. Savings: {savings*100:.1f}%)")
+                return {
+                    "model": winner_id,
+                    "api_base": winner_obj.get("api_base"), # Might be None if it's a standard cloud provider
+                    "provider": winner_obj.get("provider", "openai"),
+                    "reason": reason
+                }
+                
+    except Exception as e:
+        logger.error(f"Arbitrage Check Failed: {e}")
+        
+    # Default: No swap
+    return None

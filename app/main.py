@@ -165,15 +165,7 @@ async def security_guard(request: Request, call_next):
         # Usamos el logger 'agentshield' configurado globalmente
         # Intentamos sacar la IP real para el log, si no, usamos la del host
         real_ip = request.headers.get("cf-connecting-ip", request.client.host)
-        
-        # DEBUG: Log mismatch details safely
-        safe_expected = f"{expected_secret[:3]}...{expected_secret[-3:]}" if expected_secret else "None"
-        safe_incoming = f"{incoming_secret[:3]}...{incoming_secret[-3:]}" if incoming_secret else "None"
-        logger.warning(
-            f"⛔ Direct access blocked from {real_ip}. "
-            f"Expected secret len={len(expected_secret) if expected_secret else 0} ({safe_expected}), "
-            f"Incoming secret len={len(incoming_secret) if incoming_secret else 0} ({safe_incoming})"
-        )
+        logger.warning(f"⛔ Direct access blocked from {real_ip}")
         return JSONResponse(
             status_code=403, 
             content={"error": "Direct access forbidden. Use getagentshield.com"}

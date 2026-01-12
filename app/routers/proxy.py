@@ -101,10 +101,48 @@ async def universal_proxy(
     # Limpiamos los datos SIEMPRE, vaya a OpenAI o a Localhost
     # Esto garantiza que nunca filtres secretos, incluso en local.
     clean_messages = []
+    semantic_probe = "" # Texto representativo para búsqueda vectorial
     for m in messages:
         clean_content = await advanced_redact_pii(m.get("content", ""), tenant_id)
         clean_messages.append({"role": m["role"], "content": clean_content})
+        # Construimos el contexto para la búsqueda semántica
+        if m["role"] == "user":
+            semantic_probe += f"{clean_content}\n"
     
+    # --- ⚡ HELICONE KILLER: SEMANTIC CACHE LAYER ⚡ ---
+    from app.services.cache import get_semantic_cache, set_semantic_cache
+    
+    # Solo intentamos caché si no es streaming (por simplicidad MVP) y hay probe
+    cache_hit = None
+    if semantic_probe.strip():
+        cache_hit = await get_semantic_cache(semantic_probe.strip(), threshold=0.92, tenant_id=tenant_id)
+        
+    if cache_hit:
+        logger.info(f"⚡ CACHE HIT for {x_function_id} (Tenant: {tenant_id})")
+        # Devolvemos respuesta inmediata (Simulando estructura de OpenAI)
+        cached_response = {
+            "id": "cache-hit-" + x_function_id,
+            "object": "chat.completion",
+            "created": 1234567890,
+            "model": "semantic-cache",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": cache_hit
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0
+            }
+        }
+        # Headers para que el cliente sepa que fue caché
+        headers = {"X-Cache": "HIT", "X-Cache-Latency": "0ms"}
+        return JSONResponse(content=cached_response, headers=headers)
+
     # D. "El Cambiazo" de Modelo (Model Swapping)
     # Si el Dashboard dice "Usa gpt-3.5" aunque el código pida "gpt-4", obedecemos al Dashboard.
     forced = config.get('force_model')
@@ -115,6 +153,35 @@ async def universal_proxy(
     # Si es None, LiteLLM usará la API oficial de OpenAI/Anthropic.
     api_base = config.get('upstream_url') 
     
+    # --- 💰 HEDGE FUND STRATEGY: MODEL ARBITRAGE 💰 ---
+    # Si no hay forzado manual y el cliente activó "Smart Routing"
+    from app.services.arbitrage import get_best_provider
+    
+    # Asumimos que 'smart_routing_enabled' vendrá en config en el futuro. 
+    # Por ahora checkeamos si existe la key o si el usuario "quiere ganar siempre" enviando header 'X-Smart-Routing'
+    # o simplemente si config lo tiene (lo simularemos o confiaremos en que DB lo traerá)
+    is_smart_active = config.get('smart_routing_enabled', False)
+    
+    if not forced and is_smart_active:
+        try:
+            # Buscamos la mejor oferta en el mercado AHORA MISMO
+            best_option = await get_best_provider(
+                target_quality=target_model,
+                max_latency_ms=2000,
+                messages=clean_messages # Usamos mensajes LIMPIOS para análisis (Safe)
+            )
+            
+            if best_option:
+                new_model = best_option["model"]
+                logger.info(f"💰 Arbitrage Active: Swapping {target_model} -> {new_model} (Reason: {best_option.get('reason')})")
+                
+                # APLICAMOS EL SWAP
+                target_model = new_model
+                if best_option.get("api_base"):
+                    api_base = best_option["api_base"]
+        except Exception as arb_err:
+             logger.warning(f"Arbitrage skipped due to error: {arb_err}")
+
     # Obtener API Key del proveedor (Si es local, suele ser irrelevante, pero LiteLLM la pide)
     # Si vamos a OpenAI real, sacamos la key de nuestro Vault.
     api_key = None
@@ -152,6 +219,11 @@ async def universal_proxy(
             final_text = await advanced_redact_pii(final_text, tenant_id)
             # Reemplazamos en el objeto para devolver limpio al cliente
             response_obj.choices[0].message.content = final_text
+            
+            # --- 💾 INSERTAR EN CACHÉ (Learning) ---
+            if semantic_probe.strip() and final_text.strip():
+                 # Guardamos asíncronamente
+                 asyncio.create_task(set_semantic_cache(semantic_probe.strip(), final_text, tenant_id))
         
         # Calcular tokens de salida reales
         try:
