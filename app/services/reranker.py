@@ -1,6 +1,7 @@
-# app/services/reranker.py
+# agentshield_core/app/services/reranker.py
 import asyncio
 import logging
+import numpy as np
 
 logger = logging.getLogger("agentshield.reranker")
 
@@ -13,13 +14,15 @@ def get_reranker_model():
         import torch
         torch.set_num_threads(1)
         
-        logger.info("⚖️ Loading Cross-Encoder (Notary-Grade)...")
-        # CAMBIO CLAVE: Usamos un modelo STS que devuelve 0 a 1 nativamente
-        _reranker_model = CrossEncoder('cross-encoder/stsb-distilroberta-base')
+        logger.info("🌍 Loading Multilingual Cross-Encoder (mMARCO)...")
+        # CAMBIO CRÍTICO: Usamos mMARCO, que soporta Español, Inglés, Francés, etc.
+        # Este modelo es ligero pero entiende cruce de idiomas.
+        _reranker_model = CrossEncoder('cross-encoder/mmarco-mMiniLM-v2-L12-H384-v1')
     return _reranker_model
 
 async def verify_cache_logic(query: str, cached_query: str) -> tuple[bool, float]:
     try:
+        # Optimización rápida: Si son idénticos string a string, 100% match
         if query == cached_query:
             return True, 1.0
 
@@ -27,23 +30,26 @@ async def verify_cache_logic(query: str, cached_query: str) -> tuple[bool, float
         
         def _compute():
             model = get_reranker_model()
-            # Este modelo devuelve un float entre 0 y 1 directamente
+            # Este modelo devuelve logits (no 0-1 directo), así que aplicamos sigmoide
+            # para tener un porcentaje de confianza real.
             scores = model.predict([(query, cached_query)])
-            return float(scores[0])
+            
+            # Conversión Logit -> Probabilidad (Sigmoide manual simple)
+            prob = 1 / (1 + np.exp(-scores[0])) 
+            return float(prob)
 
         score = await loop.run_in_executor(None, _compute)
         
-        # Ahora 0.90 sí significa "90% seguro"
-        is_valid = score >= 0.90 
+        # Ajustamos el umbral. Al cruzar idiomas, 0.85 es muy alta confianza.
+        is_valid = score >= 0.85 
         
         if is_valid:
-            logger.info(f"✅ Reranker Approved: {score:.4f}")
+            logger.info(f"✅ Multilingual Match Approved: {score:.4f}")
         else:
-            logger.info(f"🛡️ Reranker Rejected: {score:.4f}")
+            logger.info(f"🛡️ Match Rejected: {score:.4f}")
             
         return is_valid, score
 
     except Exception as e:
         logger.error(f"⚠️ Reranker Error: {e}")
-        # Fail-safe: Si falla el juez, mejor no usar el caché por seguridad
         return False, 0.0
