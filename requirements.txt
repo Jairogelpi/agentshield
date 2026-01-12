@@ -30,7 +30,8 @@ rapidfuzz
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch
 torchvision
-sentence-transformers
+# sentence-transformers
+flashrank
 
 # --- SOVEREIGN AI (LOCAL INFERENCE) ---
 onnxruntime>=1.18.0

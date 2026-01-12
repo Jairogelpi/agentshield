@@ -17,30 +17,25 @@ RUN uv pip install --system maturin
 WORKDIR /app
 
 # 3. Compilar el Módulo Rust
-# Copiamos solo lo necesario para cachear la compilación de crates
 COPY rust_module /app/rust_module
 WORKDIR /app/rust_module
-# Esto compila el código Rust y genera un archivo .whl (wheel) de Python optimizado
-# Fix for Python 3.13 support in PyO3 0.21
 ENV PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
 RUN maturin build --release --strip
 
 # 4. Instalar Dependencias Python + Nuestro Módulo Rust
 WORKDIR /app
 COPY requirements.txt .
-# Instalamos requirements Y el wheel que acabamos de cocinar
 RUN uv pip install --system --compile-bytecode \
     --extra-index-url https://download.pytorch.org/whl/cpu \
     -r requirements.txt \
     rust_module/target/wheels/*.whl
 
-# Descarga de modelos (Solo Embeddings ya que PII ahora es API/Rust)
+# --- CAMBIO CRÍTICO AQUÍ ---
+# 5. Descarga de modelos (FlashRank / ONNX)
+# Eliminamos sentence-transformers y usamos flashrank para descargar el modelo "Nano"
+# Esto evita descargas en tiempo de ejecución.
 RUN mkdir -p /app/model_cache && \
-    python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2', cache_folder='/app/model_cache')" && \
-    mkdir -p /app/models
-    # NOTA: En producción, descargar aquí el modelo ONNX:
-    # RUN wget https://huggingface.co/.../pii-ner-quantized.onnx -O /app/models/pii-ner-quantized.onnx
-    # RUN wget https://huggingface.co/.../tokenizer.json -O /app/models/tokenizer.json
+    python -c "from flashrank import Ranker; Ranker(model_name='ms-marco-MiniLM-L-12-v2', cache_dir='/app/model_cache')"
 
 # ETAPA 2: Runner (Imagen final ligera)
 FROM python:3.13-slim
@@ -49,24 +44,30 @@ FROM python:3.13-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONOPTIMIZE=1 \
-    HF_HOME=/app/model_cache \
+    # HF_HOME define donde busca FlashRank por defecto si no se le pasa cache_dir,
+    # pero aquí lo estamos moviendo a /opt/models y el código usa cache_dir=/opt/models explícitamente.
+    HF_HOME=/opt/models \
     TRANSFORMERS_OFFLINE=1 
 
 WORKDIR /app
 
-# Copiamos las librerías instaladas desde el Builder (Magia de Multi-stage)
-# Esto descarta toda la basura de compilación (gcc, apt, etc) y reduce el tamaño de exportación en 300MB+
+# Copiamos las librerías instaladas
 COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
-# Copiamos los modelos descargados
-COPY --from=builder /app/model_cache /app/model_cache
 
-# Copiamos el código fuente al final
+# --- CAMBIO CRÍTICO AQUÍ ---
+# Copiamos el modelo descargado a /opt/models (Debe coincidir con tu reranker.py)
+COPY --from=builder /app/model_cache /opt/models
+
+# Copiamos el código fuente
 COPY ./app /app/app
 
-# Usuario no-root para seguridad
-RUN useradd -m appuser && chown -R appuser /app
+# Usuario no-root y permisos para la carpeta de modelos
+RUN useradd -m appuser && \
+    chown -R appuser /app && \
+    chown -R appuser /opt/models
+
 USER appuser
 
-# Comando de arranque optimizado (Granian - Rust HTTP Server)
+# Comando de arranque
 CMD ["sh", "-c", "granian --interface asgi app.main:app --host 0.0.0.0 --port ${PORT:-10000} --workers ${WEB_CONCURRENCY:-1}"]
