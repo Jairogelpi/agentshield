@@ -139,8 +139,21 @@ async def check_budget_integrity(tenant_id: str, estimated_cost: float) -> tuple
             current_spend = await redis_client.get(f"spend:{tenant_id}:total")
             limit = await redis_client.get(f"limit:{tenant_id}")
             
-            # Conversiones seguras
-            cur = float(current_spend) if current_spend else 0.0
+            # Conversiones seguras & Fallback de "Verdad"
+            if current_spend is None:
+                # ⚠️ CACHE MISS: Ir a la fuente de verdad (DB)
+                logger.warning(f"⚠️ Cache Miss for Budget Check {tenant_id}. Fetching DB...")
+                from app.db import supabase
+                # Asumimos que la tabla cost_centers tiene el gasto actual
+                res = supabase.table("cost_centers").select("current_spend").eq("tenant_id", tenant_id).execute()
+                total_db = sum(item['current_spend'] for item in res.data)
+                
+                # Repoblar Redis
+                await redis_client.setex(f"spend:{tenant_id}:total", 86400, total_db)
+                cur = float(total_db)
+            else:
+                cur = float(current_spend)
+
             lim = float(limit) if limit else 10.0 # Default seguro start-up
             
             if cur + estimated_cost > lim:

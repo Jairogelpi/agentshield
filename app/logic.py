@@ -1,7 +1,9 @@
 # app/logic.py
 import os
 import time
-from jose import jwt
+import hashlib
+import asyncio
+from jose import jwt, JWTError
 from app.db import supabase, redis_client
 from fastapi import HTTPException
 import json
@@ -23,6 +25,79 @@ def create_aut_token(data: dict):
 def sign_receipt(receipt_data: dict):
     # Firma inmutable del recibo
     return jwt.encode(receipt_data, SECRET_KEY, algorithm=ALGORITHM)
+
+# --- NUEVA FUNCIÓN: VALIDACIÓN HÍBRIDA (API KEY + JWT) ---
+async def verify_api_key(auth_header: str) -> str:
+    """
+    Verifica la identidad del cliente de forma segura.
+    Soporta:
+    1. Bearer JWT (Firmado por nosotros) -> Para Frontend/Dashboard
+    2. Bearer sk_live_... (API Key Opaca) -> Para Scripts/Backend (Hash Lookup)
+    
+    Retorna: tenant_id (str) o lanza 401.
+    """
+    if not auth_header:
+        raise HTTPException(401, "Missing Authorization Header")
+
+    token = auth_header.replace("Bearer ", "").strip()
+    
+    # ESTRATEGIA A: JWT (Token largo con puntos)
+    if len(token) > 50 and token.count(".") == 2:
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            # Validar expiración y emisor es automático por jose si se configura, 
+            # pero aquí confiamos en la firma.
+            return payload.get("tenant_id")
+        except JWTError:
+            raise HTTPException(401, "Invalid or Expired JWT")
+
+    # ESTRATEGIA B: API KEY (Opaque Token -> Hash Lookup)
+    # 1. Hashing SHA256 (Nunca enviamos la key cruda a la DB/Logs)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    
+    # 2. Check Caché Redis (Velocidad Luz: 2ms)
+    cache_key = f"auth:apikey:{token_hash}"
+    cached_tenant = await redis_client.get(cache_key)
+    
+    if cached_tenant:
+        return cached_tenant.decode() # Redis devuelve bytes
+        
+    # 3. Check Base de Datos (Supabase)
+    # Usamos run_in_executor para no bloquear el Event Loop con la llamada HTTP sincrona de Supabase
+    loop = asyncio.get_running_loop()
+    try:
+        res = await loop.run_in_executor(
+            None, 
+            lambda: supabase.table("tenants").select("id").eq("api_key_hash", token_hash).execute()
+        )
+        
+        if res.data and len(res.data) > 0:
+            tenant_id = res.data[0]['id']
+            # Guardamos en caché por 15 minutos (LRU implícito por TTL)
+            await redis_client.setex(cache_key, 900, tenant_id)
+            return tenant_id
+            
+        # 3.1. FALLBACK: Check Llave Secundaria (Zero-Downtime Rotation)
+        # Si la llave primaria falló, buscamos si es una secundaria válida (expira en 24h)
+        res_sec = await loop.run_in_executor(
+            None, 
+            lambda: supabase.table("tenants")
+                .select("id")
+                .eq("api_key_hash_secondary", token_hash)
+                .gt("api_key_secondary_expires_at", "now()") # Solo si no ha expirado
+                .execute()
+        )
+        if res_sec.data and len(res_sec.data) > 0:
+            tenant_id = res_sec.data[0]['id']
+            # Cacheamos (quizás con TTL menor, ya que está muriendo)
+            await redis_client.setex(cache_key, 300, tenant_id)
+            return tenant_id
+            
+    except Exception as e:
+        print(f"Auth DB Error: {e}") # Usar logger en prod
+        
+    # Si llegamos aquí, nadie reconoció la llave
+    raise HTTPException(401, "Invalid API Key")
 
 def check_policy(policy_rules, request_data, current_spend, monthly_limit):
     # 1. Check presupuesto

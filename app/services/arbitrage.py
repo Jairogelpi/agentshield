@@ -90,6 +90,13 @@ class AgentShieldRLArbitrator:
         Función de Recompensa 2026:
         Optimiza el ROI balanceando precisión (rerank) y coste.
         """
+        # --- FIX: HUMILDAD ARTIFICIAL ---
+        # Si no hay feedback explícito del usuario (1.0 por defecto), 
+        # bajamos a 0.9 para incentivar que el sistema siga buscando mejoras.
+        if user_satisfaction == 1.0: 
+            user_satisfaction = 0.9
+        # --------------------------------
+        
         # Penalizamos latencia alta y baja precisión agresivamente
         # Rerank score > 0.95 es ideal. Si baja, penalizamos exponencialmente.
         precision_penalty = 1.0 if rerank_score > 0.95 else (rerank_score * 0.5)
@@ -244,7 +251,8 @@ async def get_best_provider(target_quality: str, max_latency_ms: int = 2000, mes
                     "model": winner_id,
                     "api_base": winner_obj.get("api_base"), # Might be None if it's a standard cloud provider
                     "provider": winner_obj.get("provider", "openai"),
-                    "reason": reason
+                    "reason": reason,
+                    "rl_state": analysis.get("rl_state") # <--- FIX: Retornar estado para feedback loop
                 }
                 
     except Exception as e:

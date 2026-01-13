@@ -23,17 +23,13 @@ async def get_carbon_dashboard(tenant_id: str = Depends(get_tenant_from_header))
     
     current_region = os.getenv("SERVER_REGION", "eu")
     
-    res = supabase.table("receipts")\
-        .select("usage_data")\
-        .eq("tenant_id", tenant_id)\
-        .limit(500)\
-        .execute()
-    
-    total_co2 = 0.0
-    
-    for r in res.data:
-        meta = r.get("usage_data", {})
-        total_co2 += meta.get("carbon_g", 0.0)
+    # RPC Call (O(1) y 100% Preciso)
+    try:
+        res = supabase.rpc("get_total_carbon", {"p_tenant_id": tenant_id}).execute()
+        total_co2 = float(res.data) if res.data else 0.0
+    except Exception:
+        # Fallback a 0.0 si falla RPC o no existe data
+        total_co2 = 0.0
     
     # Un árbol maduro absorbe ~21kg de CO2 al año (~57g al día)
     trees_equivalent = total_co2 / 57.0 

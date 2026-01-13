@@ -37,7 +37,11 @@ async def get_current_spend(tenant_id: str, cost_center: str):
     res = await loop.run_in_executor(None, _fetch)
     if res.data:
         val = res.data[0]['current_spend']
-        await redis_client.set(key, val)
+        # FIX: Evitar Race Condition "Check-Then-Set"
+        # Usamos setnx (Set if Not Exists) para no sobrescribir incrementos concurrentes
+        # que hayan ocurrido mientras consultábamos la DB.
+        # Si ya existe, NO lo tocamos (respetamos la verdad parcial de Redis que es más reciente).
+        await redis_client.setnx(key, val)
         return float(val)
     return 0.0
 
@@ -48,33 +52,47 @@ async def increment_spend(tenant_id: str, cost_center: str, amount: Decimal, met
     3. Lanza persistencia asíncrona (Eficiencia).
     """
     spend_key = f"spend:{tenant_id}:{cost_center}"
+    spend_key_total = f"spend:{tenant_id}:total" # <--- CLAVE FALTANTE (Fix Financiero)
     
     try:
         # Convert Decimal to float just for Redis (Redis requires float/string)
         # But we keep precision in the WAL payload
         amount_float = float(amount)
         
-        # 1. ACTUALIZACIÓN INSTANTÁNEA (Redis - Hot Path)
+        # 1. ACTUALIZACIÓN ATÓMICA (Redis - Hot Path)
         # Sigue siendo la fuente de verdad para la limitación de tasa (Rate Limiting)
-        new_total = await redis_client.incrbyfloat(spend_key, amount_float)
+        # Pipeline para atomicidad entre CC y TOTAL
+        pipe = redis_client.pipeline()
+        pipe.incrbyfloat(spend_key, amount_float)
+        pipe.incrbyfloat(spend_key_total, amount_float) # <--- FIX: Actualizamos TOTAL
+        results = await pipe.execute()
+        
+        new_total_cc = results[0]
         
         # 2. STREAM BUFFER (Alta Velocidad)
-        # En lugar de escribir en WAL y luego en DB, enviamos al Stream.
-        # El Worker se encargará de la persistencia asíncrona y batched.
-        
         event_payload = {
             "tid": tenant_id,
             "cc": cost_center,
             "amt": str(amount),
-            "ts": str(time.time()), # xadd espera strings/bytes
+            "ts": str(time.time()),
             "meta": json.dumps(metadata or {})
         }
         
         # Añadimos al stream 'billing:stream'
-        # MAXLEN ~ 100000 para evitar que explote si el worker muere
         await redis_client.xadd("billing:stream", event_payload, maxlen=100000, approximate=True)
+
+        # 3. WAL DE SEGURIDAD (Backup para Crash Recovery)
+        # Guardamos TAMBIÉN en la lista. El worker, cuando procese el stream con éxito,
+        # deberá borrar este item de la lista (LREM) usando persist_spend_with_wal.
+        # Esto garantiza que si el worker muere, recover_pending_charges encontrará los datos.
+        wal_payload = json.dumps({
+            "tid": tenant_id, 
+            "cc": cost_center, 
+            "amt": float(amount)
+        })
+        await redis_client.rpush(WAL_QUEUE_KEY, wal_payload) # <--- FIX: Double Write
         
-        return new_total
+        return new_total_cc
 
     except Exception as e:
         logger.error(f"❌ Redis Failure in increment_spend: {e}")

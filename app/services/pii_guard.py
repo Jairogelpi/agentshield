@@ -44,26 +44,30 @@ def redact_pii_sync(text: str, tenant_id: str = "unknown") -> str:
             except Exception as e:
                 logger.error(f"Local PII Inference Failed: {e}. Switching to Cloud Fallback.")
         
-        # B. FALLBACK CLOUD (API)
-        # Solo usamos esto si TODO lo demás falla o no está disponible.
-        if not engine and len(text) > 0 and "API" in PII_MODEL_API: 
-             system_prompt = (
-                "You are a PII Redaction Engine. Your ONLY job is to replace sensitive Personal Identifiable Information "
-                "(Names, Locations, IDs, Secrets) with placeholders. Return ONLY the redacted text."
-             )
-             try:
-                with tracer.start_as_current_span("pii_cloud_fallback_sync"):
+        # B. FALLBACK (Estrategia Competitiva)
+        # Si falla la IA local (Rust/ONNX), ¿Bloqueamos 2 segundos para llamar a la nube?
+        # Solo si el cliente paga por "Paranoid Mode" (FORCE_CLOUD_FALLBACK).
+        # Si no, Regex agresivo es mejor tradeoff (seguro y rápido).
+        
+        if not engine:
+            if os.getenv("FORCE_CLOUD_FALLBACK") == "true":
+                logger.warning("⚠️ PII Local Engine not ready. Fallback to Cloud (Slow).")
+                # Llamada lenta a LLM externo
+                try:
                     response = completion(
-                        model=PII_MODEL_API,
-                        messages=[
-                             {"role": "system", "content": system_prompt},
-                             {"role": "user", "content": text}
-                        ],
-                        temperature=0.0
+                       model=PII_MODEL_API,
+                       messages=[{"role": "user", "content": f"Redact PII from this text. Output only redacted text: {text}"}],
+                       api_key=os.getenv("PII_API_KEY") 
                     )
                     return response.choices[0].message.content
-             except Exception as api_err:
-                 logger.error(f"Cloud PII Fallback Failed: {api_err}")
+                except Exception as api_err:
+                    logger.error(f"Cloud PII Fallback Failed: {api_err}")
+                    return text # Falla total
+            else:
+                logger.warning("⚠️ PII Engine not ready. Using Fast Regex Fallback instead of Slow Cloud.")
+                # Ya hicimos fast_regex_scrub arriba (Rust/Python Regex), así que devolvemos eso.
+                # Evitamos la llamada a completion() que añade latencia oculta.
+                return text
                  
         return text
 

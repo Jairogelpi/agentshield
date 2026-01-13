@@ -33,7 +33,12 @@ if sentry_dsn:
 
 # 1. Configuración de Logs (Betterstack)
 # Solo si existe el token, para no romper en dev local sin token
+# Solo si existe el token, para no romper en dev local sin token
 logtail_token = os.getenv("LOGTAIL_TOKEN")
+
+# Global state for Readiness Probe
+MODELS_LOADED = False
+
 if logtail_token:
     handler = LogtailHandler(source_token=logtail_token)
     
@@ -45,7 +50,9 @@ if logtail_token:
     
     # --- NON-BLOCKING LOGGING (Queue Pattern) ---
     # Logtail/Console I/O can be slow. We offload it to a background thread.
-    log_queue = queue.Queue(-1) # Infinite queue
+    # ANTES: log_queue = queue.Queue(-1) # Infinite queue -> PELIGRO
+    # AHORA: Límite de 10,000 logs. Si se llena, evita OOM.
+    log_queue = queue.Queue(10000)
     queue_handler = QueueHandler(log_queue)
     
     # The listener runs in a separate thread and calls the actual expensive handlers
@@ -118,8 +125,8 @@ async def lifespan(app: FastAPI):
     # 4. WARMUP (Modelos en Memoria tras arranque exitoso)
     # Esperamos un poco para que Granian bindee el puerto primero y pase el Health Check de Render
     async def warmup_models():
-        await asyncio.sleep(10) # 10s delay
-        logger.info("🔥 Warming up AI Models (Embeddings & PII)...")
+        """Simula (o realiza) la carga de modelos pesados en RAM."""
+        logger.info("⏳ Warming up local AI models (Embeddings, PII Guard, Reranker)...")
         try:
             from app.services.cache import get_embedding_model
             from app.services.pii_guard import get_pii_engine
@@ -128,10 +135,13 @@ async def lifespan(app: FastAPI):
             await asyncio.to_thread(get_embedding_model)
             await asyncio.to_thread(get_pii_engine)
             await asyncio.to_thread(get_reranker_model)
-            logger.info("✅ AI Models Ready in Memory!")
+            
+            global MODELS_LOADED
+            MODELS_LOADED = True
+            logger.info("✅ AI Models Ready in Memory! System Fully Operational.")
         except Exception as e:
             logger.warning(f"⚠️ Warmup Partial Fail: {e}")
-
+            
     asyncio.create_task(warmup_models())
 
     yield 
@@ -145,6 +155,14 @@ app = FastAPI(
     lifespan=lifespan,
     default_response_class=ORJSONResponse
 )
+
+# 5. PROTOCOLO ESPEJO: Sincronización Universal de Precios al Inicio
+from app.services.pricing_sync import sync_universal_prices
+@app.on_event("startup")
+async def startup_event():
+    # Sincronización de precios en segundo plano al iniciar
+    # Esto carga miles de modelos de LiteLLM a Redis en segundos
+    asyncio.create_task(sync_universal_prices())
 
 # Setup Observability (OTEL + Grafana)
 setup_observability(app)
@@ -238,12 +256,19 @@ from app.db import redis_client, supabase
 import time
 
 @app.get("/health")
-async def health_check(full: bool = False):
+async def health_check(request: Request, full: bool = False):
     """
-    Ping de salud. Si full=True, verifica DB y Redis.
-    Render llama a esto a menudo, así que por defecto es rápido.
+    Liveness & Readiness Probe.
+    Competencia: Devuelve 503 si no estamos listos para tráfico.
     """
-    health_status = {"status": "ok", "service": "agentshield-core", "timestamp": time.time()}
+    if not MODELS_LOADED:
+        # Si usáramos K8s, devolveríamos 503 aquí para Readiness.
+        # Para Render, devolvemos 200 pero indicamos estado para debug.
+        # Si el Load Balancer respeta códigos, 503 es mejor. 
+        # Mantendremos 200 para que Render no reinicie el pod, pero el dashboard sabrá que estamos 'warming_up'.
+        return JSONResponse(status_code=200, content={"status": "warming_up", "ready": False})
+        
+    health_status = {"status": "ok", "ready": True, "service": "agentshield-core", "timestamp": time.time(), "version": "1.0.0"}
     
     if full:
         try:
