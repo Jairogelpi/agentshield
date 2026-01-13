@@ -3,6 +3,9 @@ from fastapi import APIRouter, Depends
 from app.db import supabase
 from app.routers.authorize import get_tenant_from_header # O usar JWT si es para frontend web
 import os
+import logging
+
+logger = logging.getLogger("agentshield.analytics")
 
 router = APIRouter(tags=["Analytics & Sustainability"])
 
@@ -27,8 +30,9 @@ async def get_carbon_dashboard(tenant_id: str = Depends(get_tenant_from_header))
     try:
         res = supabase.rpc("get_total_carbon", {"p_tenant_id": tenant_id}).execute()
         total_co2 = float(res.data) if res.data else 0.0
-    except Exception:
-        # Fallback a 0.0 si falla RPC o no existe data
+    except Exception as e:
+        # Fallback a 0.0 si falla RPC o no existe data, pero LOGUEAMOS el error
+        logger.warning(f"Failed to fetch carbon metrics: {e}")
         total_co2 = 0.0
     
     # Un árbol maduro absorbe ~21kg de CO2 al año (~57g al día)

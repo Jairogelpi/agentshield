@@ -143,4 +143,5 @@ async def _async_db_update(provider, model, p_in, p_out):
         await loop.run_in_executor(None, lambda: supabase.table("model_prices").upsert({
             "provider": provider, "model": model, "price_in": p_in, "price_out": p_out, "updated_at": "now()"
         }, on_conflict="provider, model").execute())
-    except: pass
+    except Exception as e:
+        logger.error(f"Async DB Price Update failed: {e}")

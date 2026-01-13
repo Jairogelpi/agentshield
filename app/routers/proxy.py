@@ -63,7 +63,8 @@ async def universal_proxy(
              logger.warning(f"Registration race condition: {e}")
              config = await get_function_config(tenant_id, x_function_id)
         
-            config = {"is_active": True, "budget_daily": 0.0, "current_spend_daily": 0.0}
+    if not config:
+        config = {"is_active": True, "budget_daily": 0.0, "current_spend_daily": 0.0}
     
     # 3. APLICAR REGLAS DE HIERRO (Control Total)
     
@@ -227,20 +228,23 @@ async def universal_proxy(
                 target_model = new_model
                 if best_option.get("api_base"):
                     api_base = best_option["api_base"]
-        
-        # --- AÑADIR ESTE ELSE PARA EL FOMO (Pérdida de Oportunidad) ---
-        elif is_smart_active and not forced and 'get_best_provider' in locals():
-             # Si NO hubo arbitraje (best_option is None), calculamos cuánto perdimos por no usar el modelo más barato
-             # Nota: best_option podría no estar definida si algo falló antes, pero el try/except lo cubre.
-            try:
-                 # Asumimos que un modelo "barato" genérico cuesta un 50% menos
-                 # Esto es una heurística para "gamificar" el dashboard y mostrar "Missed Potential"
-                 potential_loss = cost_est * 0.5 
-                 # Solo registramos si el modelo actual es caro (ej. GPT-4)
-                 if "gpt-4" in target_model or "claude-3-opus" in target_model:
-                     await redis_client.incrbyfloat(f"stats:{tenant_id}:missed_savings", potential_loss)
-                     await redis_client.incrbyfloat(f"stats:{tenant_id}:missed_carbon", 0.5) # 0.5g CO2 aprox
-            except: pass
+            
+            else:
+                 # --- AÑADIR ESTE ELSE PARA EL FOMO (Pérdida de Oportunidad) ---
+                 # Si NO hubo arbitraje (best_option is None), calculamos cuánto perdimos por no usar el modelo más barato
+                try:
+                     # Asumimos que un modelo "barato" genérico cuesta un 50% menos
+                     # Esto es una heurística para "gamificar" el dashboard y mostrar "Missed Potential"
+                     potential_loss = cost_est * 0.5 
+                     # Solo registramos si el modelo actual es caro (ej. GPT-4)
+                     if "gpt-4" in target_model or "claude-3-opus" in target_model:
+                         await redis_client.incrbyfloat(f"stats:{tenant_id}:missed_savings", potential_loss)
+                         await redis_client.incrbyfloat(f"stats:{tenant_id}:missed_carbon", 0.5) # 0.5g CO2 aprox
+                except Exception as fomo_err:
+                    logger.warning(f"FOMO calculation failed: {fomo_err}")
+
+        except Exception as e:
+            logger.warning(f"Arbitrage/SmartRouting failed: {e}")
              # Por ahora no lo contamos como missed_savings para no llenar de ruido.
 
 

@@ -10,6 +10,9 @@ from app.logic import create_aut_token, get_active_policy
 from app.webhooks import trigger_webhook
 from datetime import datetime
 from app.estimator import estimator
+import logging
+
+logger = logging.getLogger("agentshield.authorize")
 
 security = HTTPBearer()
 
@@ -82,6 +85,7 @@ async def get_tenant_from_jwt(credentials: HTTPAuthorizationCredentials = Securi
         return tenant_id
         
     except Exception as e:
+        logger.warning(f"JWT Auth Failed: {e}")
         # Si Supabase falla validando el token
         raise HTTPException(status_code=401, detail="Invalid Session Token")
 

@@ -6,6 +6,8 @@ import numpy as np
 import time
 from litellm import completion
 
+logger = logging.getLogger("agentshield.pii_guard")
+
 def redact_pii_sync(text: str, tenant_id: str = "unknown") -> str:
     """
     Versión sincrona de la limpieza PII, ideal para llamar desde logging 
@@ -42,7 +44,8 @@ def redact_pii_sync(text: str, tenant_id: str = "unknown") -> str:
                 # Ejecución directa sincrona (ONNX Runtime es rápido)
                 return engine.predict(text)
             except Exception as e:
-                logger.error(f"Local PII Inference Failed: {e}. Switching to Cloud Fallback.")
+                logger.error(f"Local PII Inference Failed: {e}", exc_info=True)
+                logger.warning("Switching to Cloud Fallback.")
         
         # B. FALLBACK (Estrategia Competitiva)
         # Si falla la IA local (Rust/ONNX), ¿Bloqueamos 2 segundos para llamar a la nube?
@@ -61,7 +64,7 @@ def redact_pii_sync(text: str, tenant_id: str = "unknown") -> str:
                     )
                     return response.choices[0].message.content
                 except Exception as api_err:
-                    logger.error(f"Cloud PII Fallback Failed: {api_err}")
+                    logger.error(f"Cloud PII Fallback Failed: {api_err}", exc_info=True)
                     return text # Falla total
             else:
                 logger.warning("⚠️ PII Engine not ready. Using Fast Regex Fallback instead of Slow Cloud.")

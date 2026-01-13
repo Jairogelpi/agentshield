@@ -239,7 +239,8 @@ async def _reset_daily_spend(tid, fid):
     try:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, lambda: supabase.table("function_configs").update({"current_spend_daily": 0}).eq("tenant_id", tid).eq("function_id", fid).execute())
-    except: pass
+    except Exception as e:
+        logger.warning(f"Failed to reset daily spend for {fid}: {e}")
 
 async def _touch_function_last_used(tid, fid):
     """Actualiza la fecha de uso para saber qué funciones están vivas"""
@@ -248,5 +249,5 @@ async def _touch_function_last_used(tid, fid):
         def _update():
              return supabase.table("function_configs").update({"last_used": "now()"}).eq("tenant_id", tid).eq("function_id", fid).execute()
         await loop.run_in_executor(None, _update)
-    except:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to touch last_used for {fid}: {e}")

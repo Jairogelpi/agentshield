@@ -4,6 +4,9 @@ from typing import Dict, Any, Optional
 from app.db import supabase, redis_client
 from app.utils import fast_json as json
 import asyncio
+import logging
+
+logger = logging.getLogger("agentshield.estimator")
 
 class MultimodalEstimator:
     """
@@ -29,7 +32,8 @@ class MultimodalEstimator:
              info = model_cost.get(model)
              if info:
                  return info.get("input_cost_per_token", 0), info.get("output_cost_per_token", 0)
-        except:
+        except Exception:
+            # Silent fallback for internal litellm lookup is acceptable here as we have DB fallback
             pass
 
         cache_key = f"price:{model}"
@@ -100,7 +104,7 @@ class MultimodalEstimator:
                 # Guardamos con TTL largo (1 mes) para mantener la inteligencia
                 await redis_client.setex(key, 2592000, new_val)
             except Exception as e:
-                print(f"Error learning ratio: {e}")
+                logger.error(f"Error learning ratio: {e}")
 
     async def estimate_cost(self, 
                       model: str, 
@@ -149,7 +153,8 @@ class MultimodalEstimator:
         # Conversión de divisa
         try:
             rate = float(await redis_client.get("config:exchange_rate") or 0.92)
-        except:
+        except Exception as e:
+            logger.warning(f"Failed to fetch exchange rate, using default: {e}")
             rate = 0.92
             
         return total_cost_usd * rate

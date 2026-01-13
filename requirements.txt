@@ -1,13 +1,13 @@
 # --- LIBRERÍAS LIGERAS ---
-fastapi
+fastapi>=0.109.0
 granian
-pydantic
+pydantic>=2.0.0
 supabase
 requests
 python-jose[cryptography]
 python-dotenv
 httpx
-litellm
+litellm>=1.30.0
 slowapi
 opentelemetry-api
 opentelemetry-sdk

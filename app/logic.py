@@ -7,6 +7,9 @@ from jose import jwt, JWTError
 from app.db import supabase, redis_client
 from fastapi import HTTPException
 import json
+import logging
+
+logger = logging.getLogger("agentshield.auth")
 
 # Estas variables DEBEN estar en tu entorno de Render (.env)
 SECRET_KEY = os.getenv("ASARL_SECRET_KEY") 
@@ -94,9 +97,10 @@ async def verify_api_key(auth_header: str) -> str:
             return tenant_id
             
     except Exception as e:
-        print(f"Auth DB Error: {e}") # Usar logger en prod
+        logger.error(f"Auth DB Error: {e}", exc_info=True)
         
     # Si llegamos aquí, nadie reconoció la llave
+    logger.warning(f"Authentication failed for hash: {token_hash[:8]}...")
     raise HTTPException(401, "Invalid API Key")
 
 def check_policy(policy_rules, request_data, current_spend, monthly_limit):
@@ -120,6 +124,8 @@ async def verify_residency(tenant_id: str):
     if not tenant_region:
         res = supabase.table("tenants").select("region").eq("id", tenant_id).single().execute()
         tenant_region = res.data.get("region", "eu") # Default fallback
+        if tenant_region == "eu":
+             logger.warning(f"Tenant {tenant_id} region not found, defaulting to 'eu'. Check DB integrity.")
         await redis_client.set(f"region:{tenant_id}", tenant_region, ex=3600)
     else:
         tenant_region = tenant_region.decode('utf-8')

@@ -32,7 +32,8 @@ class AgentShieldRLArbitrator:
                 rules = res.data['value']
                 await redis_client.setex(CACHE_KEY, 300, json.dumps(rules))
                 return rules
-        except: pass
+        except Exception as e:
+            logger.warning(f"Failed to load arbitrage rules from DB: {e}")
         
         return {
             "thresholds": {"trivial_score": 30, "standard_score": 70},
@@ -133,7 +134,8 @@ class AgentShieldRLArbitrator:
             data = json.loads(res.choices[0].message.content)
             data['input_tokens'] = est_tokens
             return data
-        except:
+        except Exception as e:
+            logger.warning(f"Complexity analysis failed: {e}")
             return {"score": 100, "input_tokens": est_tokens}
 
     async def record_latency(self, model: str, ms: float):
