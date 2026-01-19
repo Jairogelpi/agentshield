@@ -273,7 +273,7 @@ app.add_middleware(
 
 # 2. Conectar Routers
 from app.routers import proxy, dashboard, authorize, onboarding, compliance, analytics, audit, receipt
-from app.routers import proxy, dashboard, authorize, onboarding, compliance, analytics, audit, receipt, embeddings
+from app.routers import proxy, dashboard, authorize, onboarding, compliance, analytics, audit, receipt, embeddings, feedback
 
 app.include_router(authorize.router)
 app.include_router(receipt.router)
@@ -283,7 +283,9 @@ app.include_router(onboarding.router)
 app.include_router(compliance.router)
 app.include_router(analytics.router)
 app.include_router(audit.router)
+app.include_router(audit.router)
 app.include_router(embeddings.router)
+app.include_router(feedback.router) # 🧠 Learning Loop
 
 # Endpoint de salud para Render (ping)
 # Endpoint de salud para Render (Deep Health Check)

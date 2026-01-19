@@ -115,7 +115,7 @@ async def universal_proxy(
         logger.warning(f"🛡️ POLICY BLOCK: {policy_result.violation_msg}")
         raise HTTPException(status_code=403, detail=f"AgentShield Policy: {policy_result.violation_msg}")
 
-    # B. MODIFICACIÓN REAL (Enforce Downgrade)
+    # B. MODIFICACIÓN REAL (Enforce Downgrade / Cap)
     if policy_result.action == "DOWNGRADE":
         new_mod = policy_result.modified_model
         if new_mod:
@@ -123,6 +123,17 @@ async def universal_proxy(
             logger.info(f"📉 Policy Downgrade applied: {original_model} -> {new_mod}")
             target_model = new_mod 
             forced = new_mod 
+
+    elif policy_result.action == "CAP_TOKENS":
+        # Parseamos el límite del mensaje (Formato "CAP:1000")
+        try:
+            val_str = policy_result.violation_msg.split(":")[-1]
+            limit = int(val_str)
+            body["max_tokens"] = limit
+            logger.info(f"✂️ Policy Cap applied: Limit output to {limit} tokens")
+        except:
+            logger.warning("Failed to parse CAP limit, using safe default 500")
+            body["max_tokens"] = 500 
 
     # End Policy Engine Logic
     # -------------------------------------------------------------
