@@ -26,44 +26,13 @@ class VerifiedIdentity:
 
 async def verify_identity_envelope(authorization: str = Header(...)) -> VerifiedIdentity:
     """
-    Desempaqueta el JWT criptográfico ("Identity Envelope").
-    Si la firma no es válida, RECHAZA la petición inmediatamente.
-    Nadie puede falsificar esto sin tu clave privada.
-    Enforce Zero Trust.
+async def verify_identity_envelope(credentials: HTTPAuthorizationCredentials = Security(security)) -> AgentShieldContext:
     """
-    if not authorization:
-         raise HTTPException(401, "Missing Authorization Header")
-
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(401, "Invalid Auth Header Format")
-    
-    token = authorization.split(" ")[1]
+    Valida el JWT y retorna un Contexto Estandarizado.
+    """
+    token = credentials.credentials
     
     try:
-        # 1. Validación Criptográfica (La Barrera Real)
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        
-        # 2. Extracción de Claims (Datos Verificados)
-        # Asumimos que tu proveedor de identidad (Supabase Auth) mete estos datos
-        # en 'app_metadata' o 'user_metadata' o directamente en el payload si es custom.
-        
-        # Standard Supabase 'sub' is user_id
-        user_id = payload.get("sub")
-        email = payload.get("email")
-        
-        # Intentamos obtener metadatos de Supabase
-        app_metadata = payload.get("app_metadata", {})
-        user_metadata = payload.get("user_metadata", {})
-        
-        # Si los metadatos no están en el token, los buscamos en Redis (Fast Cache)
-        # para no ir a la DB en cada mensaje.
-        cached_profile = await redis_client.get(f"identity:{user_id}")
-        
-        if cached_profile:
-            profile = json.loads(cached_profile)
-        else:
-            # Fallback a DB si no está en caché (Lazy Loading)
-            # Primero buscamos en 'users' si existe, sino en 'tenant_members'
             # Asumimos 'users' tiene todo por ahora como simplificación, o usamos 'auth.users' + 'public.users' info
             
             # Buscamos en nuestra tabla publica de usuarios (que deberia estar synced)

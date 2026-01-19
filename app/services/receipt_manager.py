@@ -1,4 +1,108 @@
 # app/services/receipt_manager.py
+import json
+import hashlib
+import time
+import base64
+from datetime import datetime, timezone
+from app.services.crypto_signer import sign_data
+from app.db import supabase
+from app.schema import AgentShieldContext  # Importamos el nuevo contexto
+
+async def create_receipt(
+    ctx: AgentShieldContext,
+    transaction_details: dict,
+    governance_details: dict
+) -> dict:
+    """
+    Genera un recibo forense firmado digitalmente.
+    Sigue el estándar 'AgentShield Evidence Protocol'.
+    """
+    
+    # 1. Obtener Hash Anterior (Cadena de Bloques simplificada)
+    # Buscamos el último recibo de este tenant para encadenarlo
+    try:
+        last_receipt = supabase.table("receipts") \
+            .select("signature") \
+            .eq("tenant_id", ctx.tenant_id) \
+            .order("created_at", desc=True) \
+            .limit(1) \
+            .execute()
+        
+        previous_hash = "GENESIS_BLOCK"
+        if last_receipt.data and len(last_receipt.data) > 0:
+            # Hash de la firma anterior sirve como enlace
+            prev_sig = last_receipt.data[0]['signature']
+            previous_hash = hashlib.sha256(prev_sig.encode()).hexdigest()
+    except Exception:
+        previous_hash = "UNKNOWN_LINK"
+
+    # 2. Construir Payload Canónico (Ordenado para firma consistente)
+    # User Hash para privacidad (GDPR friendly logs)
+    user_hash = hashlib.sha256(ctx.email.encode()).hexdigest()
+
+    receipt_data = {
+      "receipt_id": f"rcpt_{ctx.request_id}",
+      "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+      
+      "context": {
+        "tenant_id": ctx.tenant_id,
+        "user_hash": user_hash, 
+        "dept_id": ctx.dept_id,
+        "cost_center": "default_cost_center" # TODO: Sacar de Dept details
+      },
+
+      "transaction": {
+        "model_requested": transaction_details.get("model_requested"),
+        "model_delivered": transaction_details.get("model_delivered"),
+        "tokens": { 
+            "input": transaction_details.get("input_tokens", 0), 
+            "output": transaction_details.get("output_tokens", 0) 
+        },
+        "cost_usd": transaction_details.get("cost_usd", 0.0),
+        "latency_ms": transaction_details.get("latency_ms", 0)
+      },
+
+      "governance": {
+        "policy_version_hash": governance_details.get("policy_hash", "no_policy"),
+        "decision": governance_details.get("decision", "ALLOW"),
+        "pii_redacted": governance_details.get("pii_redacted", False),
+        "redaction_count": governance_details.get("redaction_count", 0),
+        "pii_types": governance_details.get("pii_types", [])
+      },
+
+      "integrity": {
+        "previous_receipt_hash": previous_hash,
+        "signature_algorithm": "RSA-SHA256"
+      }
+    }
+
+    # 3. Firmar Digitalmente
+    # Serializamos igual que como se verificará en el frontend
+    payload_str = json.dumps(receipt_data, sort_keys=True)
+    signature = sign_data(payload_str)
+
+    # 4. Ensamblar Recibo Final
+    final_receipt = receipt_data.copy()
+    final_receipt["signature"] = signature
+
+    # 5. Persistir en DB (Evidence Vault)
+    # Background task idealmente, pero aquí lo hacemos inline por simplicidad del ejemplo
+    try:
+        supabase.table("receipts").insert({
+            "id": receipt_data["receipt_id"],
+            "tenant_id": ctx.tenant_id,
+            "user_id": ctx.user_id,
+            "model": transaction_details.get("model_delivered"),
+            "tokens": transaction_details.get("input_tokens", 0) + transaction_details.get("output_tokens", 0),
+            "cost": transaction_details.get("cost_usd", 0.0),
+            "full_receipt": final_receipt, # Guardamos JSON completo
+            "signature": signature
+        }).execute()
+    except Exception as e:
+        print(f"Failed to persist receipt: {e}")
+
+    return final_receipt
+
 import time
 import uuid
 from app.db import supabase
