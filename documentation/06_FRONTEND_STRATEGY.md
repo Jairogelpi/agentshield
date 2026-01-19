@@ -1,7 +1,7 @@
 # 06. Estrategia Frontend: AgentShield OS (Dual Interface)
 
 > **Estado**: En Construcción Activa
-> **Versión**: 1.1 (Technical Blueprint)
+> **Versión**: 2.0 ("God Tier" Update)
 
 Para el usuario final, AgentShield no es solo una API, es un sistema operativo empresarial ("OS"). Nuestra estrategia de frontend es dual: separamos la experiencia de "Consumo" (Chat) de la experiencia de "Control" (Dashboard), conectándolas mediante una identidad federada.
 
@@ -17,6 +17,7 @@ Esta interfaz consume la API de AgentShield como si fuera OpenAI, pero recibe va
     -   `AgentShield Auto`: Router inteligente que decide entre modelos según complejidad.
     -   `AgentShield Secure`: Garantiza PII stripping y borrado de registros.
 -   **In-Chat HUD**: El proxy añade metadatos al final del stream de texto: `[🛡️ Trust Score: 98 | 🌱 Save: 0.4g CO2 | 💰 Ahorro: $0.02]`
+    -   **Nuevo**: Indicador "🐝 Hive Hit" cuando la respuesta viene de la memoria corporativa.
 
 ---
 
@@ -25,17 +26,19 @@ Esta interfaz consume la API de AgentShield como si fuera OpenAI, pero recibe va
 
 Ubicación: `agentshield_frontend/src/app/(dashboard)`
 
-### A. Visualización Financiera ("Money View")
-**Componente**: `src/components/charts/spending-chart.tsx`
-**Estado**: 🏗️ En Diseño
+### A. Gobernanza y Políticas ("Security View")
+**Ruta**: `src/app/(dashboard)/dashboard/policies/page.tsx`
+**Estado**: ✅ En Desarrollo (Fase 5)
 
 #### Estrategia
-Mostrar no solo cuánto se gasta, sino cuánto **se ha dejado de gastar** gracias al arbitraje de IA.
--   **Query**: Endpoint `/v1/analytics/spending` (Pendiente).
--   **Métricas**:
-    -   `Gasto Real`: Lo que AgentShield pagó a OpenAI/Anthropic.
-    -   `Coste Estimado`: Lo que hubiera costado si se usara siempre GPT-4.
-    -   `ROI`: (Coste Estimado - Gasto Real).
+Dar al CISO el poder de simular antes de bloquear ("Shadow Mode").
+
+#### Detalles de Implementación
+-   **Tablas**: `policies` y `policy_events` (Supabase).
+-   **Visualización**:
+    -   Switch "Shadow Mode" vs "Enforce".
+    -   **Simulador de Impacto**: Caja de alerta amarilla mostrando cuántos usuarios *habrían* sido bloqueados en las últimas 24h.
+    -   **Hook**: `usePolicies` conecta con DB para traer hits reales.
 
 ### B. Auditoría Forense ("Legal View")
 **Ruta**: `src/app/(dashboard)/dashboard/receipts/page.tsx`
@@ -45,45 +48,65 @@ Mostrar no solo cuánto se gasta, sino cuánto **se ha dejado de gastar** gracia
 Proveer prueba matemática de inocencia y cumplimiento ("Digital Notary").
 
 #### Detalles de Implementación
-1.  **Backend**: `GET /v1/audit/public-key` expone la clave pública RSA (PEM).
-2.  **Frontend**:
+-   **Backend**: `GET /v1/audit/public-key` expone la clave pública RSA (PEM).
+-   **Frontend**:
     -   Botón "Verify" en cada fila de tabla.
-    -   **`VerificationModal`**:
-        -   Calcula SHA-256 del contenido del recibo (Client-side o simulación).
-        -   Muestra el Hash encadenado (`previous_hash`).
-        -   Verifica visualmente la firma RSA con la clave pública.
-    -   Indicadores de estado: `Verifying...` -> `Signature Valid` (Verde) / `Corrupted` (Rojo).
+    -   **`VerificationModal`**: Valida firma RSA y encadenamiento de hash.
 
-### C. Economía de Conocimiento ("Futuristic View")
-**Componente**: `src/components/3d/market-scene.tsx`
-**Estado**: 🏗️ Concepto
+### C. Visualización Financiera ("Money View")
+**Componente**: `src/components/charts/spending-chart.tsx`
+**Estado**: 🏗️ En Diseño
 
 #### Estrategia
-Hacer visible el flujo de datos invisible. Usar gráficos 3D (Three.js/React Three Fiber) para mostrar transacciones volando entre nodos (Departamentos).
--   **Visual**: Nodos brillantes que representan Depts (HR, Tech, Sales).
--   **Partículas**: Cada token generado es una partícula que viaja.
--   **Royalties**: Cuando Marketing usa un prompt de Ventas, se visualiza una transferencia de créditos.
+Mostrar el ROI del "Negotiator" y el "Gateway".
+-   **Métricas**:
+    -   `Gasto Real` vs `Coste Estimado` (Arbitraje).
+    -   `Presupuesto Salvado`: Dinero ahorrado por bloqueos de política o uso de caché (Hive).
+    -   `Overdrafts Aprobados`: Cuántas veces el "AI CFO" (Negotiator) salvó una tarea crítica.
 
 ### D. Sostenibilidad ("ESG View")
 **Ruta**: `src/app/(dashboard)/dashboard/sustainability/page.tsx`
 **Estado**: 🟡 Conectado a Backend
 
 #### Estrategia
-Convertir la eficiencia computacional en métricas ESG (Environmental, Social, Governance).
+Convertir la eficiencia computacional en métricas ESG.
+-   **Backend**: `GET /v1/analytics/sustainability` (RPC `get_total_carbon`).
+-   **Frontend**: "Árboles Plantados", Rating Energético.
 
-#### Detalles de Implementación
--   **Backend**: `GET /v1/analytics/sustainability`
-    -   Usa RPC `get_total_carbon` en Supabase para suma atómica rápida.
-    -   Constantes: 1 Árbol = 57g CO2 absorción/día.
--   **Frontend**:
-    -   Muestra "Árboles Plantados" (Equivalencia).
-    -   Rating Energético (A+ para servidores EU, B para US).
-    -   Botón "Download Certificate" para cumplimiento de normativa (EU AI Act).
+### E. Economía de Conocimiento ("Neural Hive View")
+**Componente**: `src/components/3d/market-scene.tsx`
+**Estado**: 🏗️ Concepto
+
+#### Estrategia
+Visualizar el cerebro de la empresa.
+-   Nodos brillantes = Departamentos.
+-   Conexiones = "Hive Hits" (Marketing usando solución de Ingeniería).
+-   Gamificación: "Top Contributors" (Empleados cuyas soluciones son más reusadas).
 
 ---
 
 ## Roadmap de Integración
-1.  **Auditoría (Receipts)**: ✅ Completado. Firma RSA verificable en UI.
-2.  **Sostenibilidad**: Siguiente paso. Conectar `page.tsx` con endpoint real `v1/analytics/sustainability`.
-3.  **Finanzas**: Implementar endpoint de series temporales para `spending-chart`.
-4.  **3D Market**: Implementación final (Wow Factor).
+1.  **Policies (Shadow Mode)**: ✅ Implementado (UI + Hooks).
+2.  **Hive Metrics**: Añadir contador de "Hive Hits" al dashboard principal.
+3.  **Negotiator Logs**: Mostrar historial de negociaciones en el perfil del usuario.
+
+---
+
+## 3. Infraestructura y Despliegue (The Cloud OS)
+Para garantizar la soberanía de datos y la escalabilidad, desplegamos en una arquitectura de tres capas:
+
+### A. Core / Backend (Render)
+El "Cerebro" que procesa, firma y audita.
+-   **Servicio**: Web Service (Python/Granian).
+-   **Lógica**: Gateway, Cryptography, Neural Hive.
+-   **Variables Críticas**: `OPENAI_API_KEY`, `SUPABASE_JWT_SECRET`, `PRIVATE_KEY_PEM`.
+
+### B. Dashboard / Control Plane (Vercel)
+La interfaz de gestión para el equipo de seguridad y finanzas.
+-   **Framework**: Next.js Edge Network.
+-   **Conexión**: Consume la API de Render vía `NEXT_PUBLIC_API_URL`.
+
+### C. Data Sovereignty (Supabase)
+El "Vault" donde reside la evidencia legal y los vectores.
+-   **Tablas**: `receipts` (Evidencia), `hive_memory` (Vectores), `policies` (Reglas).
+-   **Vector DB**: pgvector activado para búsqueda semántica.
