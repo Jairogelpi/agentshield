@@ -4,7 +4,7 @@ import os
 import uuid # For function_id logic
 from fastapi import APIRouter, Header, HTTPException, Depends, Security, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from app.models import AuthorizeRequest, AuthorizeResponse
+from app.models import AuthorizeRequest, AuthorizeResponse, CostCenterBudgetUpdate
 from app.db import supabase, redis_client, get_function_config
 from app.logic import create_aut_token, get_active_policy
 from app.webhooks import trigger_webhook
@@ -116,6 +116,30 @@ async def get_current_spend(tenant_id: str, cost_center_id: str):
     
     return 0.0
 
+async def get_cost_center_budget(tenant_id: str, cost_center_id: str):
+    """
+    Lee el presupuesto mensual de Redis. Si no existe, hidrata desde DB.
+    """
+    key = f"budget:cap:{tenant_id}:{cost_center_id}"
+    cap = await redis_client.get(key)
+    
+    if cap is not None:
+        return float(cap)
+        
+    # Fallback a DB
+    response = supabase.table("cost_centers")\
+        .select("monthly_budget")\
+        .eq("tenant_id", tenant_id)\
+        .eq("id", cost_center_id)\
+        .execute()
+        
+    if response.data and response.data[0].get('monthly_budget'):
+        val = float(response.data[0]['monthly_budget'])
+        await redis_client.set(key, val)
+        return val
+        
+    return 0.0
+
 from app.limiter import limiter
 
 # --- ENDPOINT PRINCIPAL ---
@@ -132,6 +156,36 @@ async def authorize_transaction(
     
     policy = await get_active_policy(tenant_id)
     current_spend = await get_current_spend(tenant_id, req.cost_center_id)
+    budget_cap = await get_cost_center_budget(tenant_id, req.cost_center_id)
+
+    # 0.5. DEPARTMENTAL WALLET ENFORCEMENT (Hard Caps)
+    if budget_cap > 0:
+        # A. Cutoff (100%)
+        if current_spend >= budget_cap:
+            await trigger_webhook(tenant_id, "budget.cutoff", {
+                "cost_center_id": req.cost_center_id,
+                "current_spend": current_spend,
+                "budget_cap": budget_cap
+            })
+            return AuthorizeResponse(
+                decision="DENIED",
+                reason_code="WALLET_DEPLETED",
+                authorization_id=str(uuid.uuid4())
+            )
+        
+        # B. Warning (80%)
+        if current_spend >= (budget_cap * 0.8):
+             # Solo disparamos la alerta si no se ha disparado hoy para esta billetera
+             warning_key = f"alert:80pct:{tenant_id}:{req.cost_center_id}:{datetime.utcnow().strftime('%Y-%m-%d')}"
+             already_sent = await redis_client.get(warning_key)
+             if not already_sent:
+                 await trigger_webhook(tenant_id, "budget.warning", {
+                    "cost_center_id": req.cost_center_id,
+                    "current_spend": current_spend,
+                    "budget_cap": budget_cap,
+                    "threshold": "80%"
+                 })
+                 await redis_client.setex(warning_key, 86400, "1")
 
     # 1. LÓGICA DE FUNCTION ID (Override & Control)
     if req.function_id:
@@ -386,3 +440,28 @@ async def authorize_transaction(
         estimated_cost=cost_estimated,
         execution_mode=execution_mode # Transparencia Total
     )
+
+@router.post("/v1/cost-centers/{cost_center_id}/budget")
+async def set_cost_center_budget(
+    cost_center_id: str,
+    budget: CostCenterBudgetUpdate,
+    tenant_id: str = Depends(get_tenant_from_header)
+):
+    """
+    Establece un límite de gasto mensual (Hard Cap) para un centro de costes.
+    Sincroniza Redis y Supabase.
+    """
+    # 1. Update Supabase
+    res = supabase.table("cost_centers").update({
+        "monthly_budget": budget.monthly_budget,
+        "updated_at": datetime.utcnow().isoformat()
+    }).eq("id", cost_center_id).eq("tenant_id", tenant_id).execute()
+    
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Cost Center not found or not owned by you")
+
+    # 2. Update Redis Cache
+    key = f"budget:cap:{tenant_id}:{cost_center_id}"
+    await redis_client.set(key, budget.monthly_budget)
+    
+    return {"status": "success", "cost_center_id": cost_center_id, "monthly_budget": budget.monthly_budget}

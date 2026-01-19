@@ -80,3 +80,6 @@ class AuthorizeResponse(BaseModel):
     suggested_model: Optional[str] = None
     suggested_provider: Optional[str] = None
     estimated_cost: Optional[float] = None # Para mostrar al usuario
+
+class CostCenterBudgetUpdate(BaseModel):
+    monthly_budget: float = Field(..., gt=0, description="Nuevo límite mensual para el centro de costes")
