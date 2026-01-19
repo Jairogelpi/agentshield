@@ -1,0 +1,92 @@
+# app/services/policy_copilot.py
+import json
+from app.db import supabase
+from litellm import completion
+from typing import List, Dict
+import logging
+
+logger = logging.getLogger("agentshield.copilot")
+
+# EL PROMPT MAESTRO
+SYSTEM_PROMPT_TEMPLATE = """
+Eres el 'Policy Compiler' de AgentShield, un sistema de gobierno de IA.
+Tu única función es traducir lenguaje natural (intenciones de seguridad) a un objeto JSON de política válido.
+
+### TU CONTEXTO (HERRAMIENTAS REALES DISPONIBLES):
+{tools_catalog}
+
+### TU CONTEXTO (DEPARTAMENTOS Y ROLES):
+- Roles válidos: 'intern', 'employee', 'manager', 'admin'
+- Departamentos sugeridos: 'marketing', 'it', 'finance', 'hr', 'sales' (normaliza si es parecido)
+
+### SCHEMA DE SALIDA (JSON ESTRICTO):
+Debes devolver UN SOLO objeto JSON con esta estructura (sin markdown, sin explicaciones):
+{{
+    "tool_name": "nombre_exacto_de_la_herramienta_arriba",
+    "target_dept": "nombre_normalizado_o_null",
+    "target_role": "rol_valido_o_null",
+    "action": "ALLOW" | "BLOCK" | "REQUIRE_APPROVAL",
+    "approval_group": "email_o_grupo_si_requiere_aprobacion",
+    "argument_rules": {{ ...json_logic... }},
+    "explanation": "Breve resumen de lo que hace esta regla para confirmar al usuario"
+}}
+
+### REGLAS DE TRADUCCIÓN:
+1. Si el usuario dice "nadie", "bloquear todo", target_dept y target_role son null.
+2. Si menciona "gastos" o "monto", asume que el argumento de la herramienta es 'amount' o 'cost'.
+   - Usa sintaxis MongoDB-style para lógica: {{"amount": {{"gt": 50}}}}
+3. Si la intención es ambigua, elige la opción más segura (BLOCK o REQUIRE_APPROVAL).
+4. Si la herramienta mencionada no existe en el catálogo, intenta adivinar la más cercana semánticamente o usa "global" si aplica a todas.
+
+### EJEMPLOS:
+Input: "Que los becarios no usen Stripe"
+Output: {{ "tool_name": "stripe_payment", "target_role": "intern", "action": "BLOCK", "argument_rules": {{}}, "explanation": "Bloquea pagos en Stripe para rol Intern." }}
+
+Input: "Avísame si alguien de Marketing gasta más de 500 en Ads"
+Output: {{ "tool_name": "google_ads", "target_dept": "marketing", "action": "REQUIRE_APPROVAL", "approval_group": "manager", "argument_rules": {{"amount": {{"gt": 500}}}}, "explanation": "Requiere aprobación para gastos > $500 en Marketing." }}
+"""
+
+async def generate_policy_json(tenant_id: str, user_prompt: str) -> Dict:
+    """
+    Toma una orden verbal y devuelve la estructura para 'tool_policies'.
+    """
+    
+    # 1. Obtener herramientas reales para dar contexto a la IA
+    try:
+        res = supabase.table("tool_definitions").select("name, description").eq("tenant_id", tenant_id).execute()
+        tools_list = res.data or []
+    except Exception as e:
+        logger.warning(f"Failed to fetch tools for copilot: {e}")
+        tools_list = []
+    
+    # Formatear catálogo para el prompt
+    catalog_str = "\n".join([f"- {t['name']}: {t.get('description', '')}" for t in tools_list])
+    if not catalog_str:
+        catalog_str = "- (No hay herramientas definidas, asume nombres estándar como 'web_search', 'dall-e-3', 'stripe_charge', 'database_query')"
+
+    # 2. Inyectar en el Prompt
+    final_prompt = SYSTEM_PROMPT_TEMPLATE.format(tools_catalog=catalog_str)
+    
+    # 3. Llamada al LLM (Usar modelo inteligente para lógica, GPT-4 o Claude 3.5 Sonnet)
+    # Nota: Usamos 'gpt-4o' como solicitado, o fallback a lo que esté configurado en env
+    try:
+        response = completion(
+            model="gpt-4o", 
+            messages=[
+                {"role": "system", "content": final_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.0, # Cero creatividad, máxima precisión
+            response_format={ "type": "json_object" } # Forzar JSON válido
+        )
+        
+        content = response.choices[0].message.content
+        return json.loads(content)
+        
+    except Exception as e:
+        logger.error(f"Copilot LLM error: {e}")
+        return {
+            "error": "Failed to generate policy", 
+            "details": str(e),
+            "explanation": "Lo siento, hubo un error procesando tu solicitud. Por favor intenta ser más específico."
+        }
