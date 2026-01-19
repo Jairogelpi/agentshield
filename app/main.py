@@ -256,11 +256,12 @@ app.add_middleware(
 app.add_middleware(
     TrustedHostMiddleware, 
     allowed_hosts=[
-        "api.getagentshield.com",   # ✅ API Subdomain
-        "getagentshield.com",       # ✅ Tu dominio real
-        "www.getagentshield.com",   # ✅ Tu subdominio
-        "localhost",                # ✅ Desarrollo
-        "127.0.0.1"                 # ✅ Desarrollo
+        "api.getagentshield.com",       # ✅ API Subdomain
+        "dashboard.getagentshield.com", # ✅ Dashboard Subdomain
+        "getagentshield.com",           # ✅ Tu dominio real
+        "www.getagentshield.com",       # ✅ Tu subdominio
+        "localhost",                    # ✅ Desarrollo
+        "127.0.0.1"                     # ✅ Desarrollo
     ]
     # Eliminamos "agentshield.onrender.com" para forzar que entren por Cloudflare
 )
