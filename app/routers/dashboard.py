@@ -11,7 +11,7 @@ import io
 import csv
 import secrets
 import hashlib
-from app.services.pricing_sync import sync_prices_from_openrouter
+from app.services.pricing_sync import sync_universal_prices
 from opentelemetry import trace
 
 tracer = trace.get_tracer(__name__)
@@ -102,7 +102,7 @@ async def trigger_price_sync(x_admin_secret: str = Header(None)):
         raise HTTPException(status_code=403, detail="Unauthorized Admin Access")
 
     # 2. Ejecutar
-    result = await sync_prices_from_openrouter()
+    result = await sync_universal_prices()
     return result
 
 @router.get("/analytics/profitability")
