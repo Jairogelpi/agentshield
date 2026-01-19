@@ -21,11 +21,13 @@ Hemos desglosado el sistema en guías técnicas ultra-detalladas para cada compo
 *   [02.1 Lógica de Autenticación](documentation/02.1_AUTH_LOGIC.md) - JWT vs API Keys.
 *   [02.2 PII Guard (Privacidad)](documentation/02.2_PII_GUARD.md) - Pipeline Rust -> ONNX -> Cloud.
 *   [02.3 Autorización](documentation/02.3_AUTHORIZATION.md) - Reglas de decisión y presupuesto.
+*   [02.4 Zero Trust & Digital Notary](documentation/02.4_ZERO_TRUST_AUDIT.md) - **[NEW]** Identity Envelopes, RSA Signing y Hash Chaining.
 
 ### **3.0 Motor Financiero**
 *   [03.1 Arbitraje RL](documentation/03.1_ARBITRAGE_RL.md) - Algoritmo Q-Learning (Bandit).
 *   [03.2 Sincronización de Precios](documentation/03.2_PRICING_SYNC.md) - Protocolo Espejo.
 *   [03.3 Estimador Multimodal](documentation/03.3_ESTIMATOR.md) - Cálculo de costes predictivo.
+*   [03.4 Waterfall Budgeting](documentation/03.4_WATERFALL_BUDGETING.md) - **[NEW]** Control de costes jerárquico (Tenant -> Dept -> User).
 
 ### **4.0 Proxy & Intelligence**
 *   [04.1 Router Universal](documentation/04.1_PROXY_ROUTER.md) - Orquestación de peticiones.
@@ -39,6 +41,9 @@ Hemos desglosado el sistema en guías técnicas ultra-detalladas para cada compo
 *   [05.4 Reportes Streaming](documentation/05.4_DASHBOARD_REPORTS.md) - Exportación masiva CSV.
 *   [05.5 Mercado](documentation/05.5_DASHBOARD_MARKET.md) - Matriz de salud y FOMO.
 *   [05.6 Sovereign Stats](documentation/05.6_DASHBOARD_SOVEREIGN.md) - Monetización de conocimiento.
+
+### **6.0 Estrategia Frontend (AgentShield OS)**
+*   [06. Dual Interface Strategy](documentation/06_FRONTEND_STRATEGY.md) - **[NEW]** OpenWebUI (Empleado) vs Dashboard Control (Admin).
 
 ---
 
