@@ -15,30 +15,27 @@ from app.services.pricing_sync import audit_and_correct_price # <--- NUEVO IMPOR
 import logging
 from app.utils import fast_json as json
 # --- IMPORTAMOS LA NUEVA LÓGICA DE VERIFICACIÓN ---
-from app.logic import verify_api_key 
-
-# Logger configurado en main.py
-logger = logging.getLogger("agentshield.proxy")
-
-router = APIRouter(tags=["Universal Proxy"])
+from app.services.identity import verify_identity_envelope, VerifiedIdentity
+from app.services.limiter import check_hierarchical_budget, charge_hierarchical_wallets
 
 @router.post("/v1/chat/completions")
 async def universal_proxy(
     request: Request,
     background_tasks: BackgroundTasks,
-    authorization: str = Header(None),
-    x_function_id: str = Header("default", alias="X-Function-ID"), # <--- LA LLAVE MAESTRA
+    # 🛡️ ZERO TRUST IDENTITY ENVELOPE (Replaces verify_api_key)
+    identity: VerifiedIdentity = Depends(verify_identity_envelope),
+    x_function_id: str = Header("default", alias="X-Function-ID"),
 ):
     """
-    Proxy Universal Seguro (Production Ready).
-    Verifica API Keys (Hashes) o JWTs.
+    Proxy Universal Seguro (Zero Trust & Waterfall Budgeting).
+    Requiere Identity Envelope (JWT) firmado.
     """
     
     start_time = time.time()
     
-    # 1. AUTENTICACIÓN REAL (Ya no confiamos en texto plano)
-    # Esto consulta Redis/DB y devuelve el ID real si la key es válida.
-    tenant_id = await verify_api_key(authorization)
+    # 1. AUTENTICACIÓN: Garantizada por 'identity' (Cryptographically Signed)
+    tenant_id = identity.tenant_id
+    logger.info(f"🔒 Secure Request from {identity.email} (Dept: {identity.dept_id})")
 
     # 2. AUTODESCUBRIMIENTO (La Magia)
     # Buscamos la configuración específica para esta función/script del cliente
@@ -105,14 +102,24 @@ async def universal_proxy(
         task_type="COMPLETION", 
         input_unit_count=input_tokens
     )
+
+    # 🌊 WATERFALL BUDGETING (The Moat)
+    # Verificamos casacada: Tenant -> Dept -> User
+    can_afford, reason = await check_hierarchical_budget(identity, cost_est)
     
+    if not can_afford:
+        # 402 Payment Required: Bloqueo estricto
+        logger.warning(f"⛔ Governance Block: {reason}")
+        raise HTTPException(status_code=402, detail=f"Financial Governance: {reason}")
+    
+    # Legacy Budget Check (Function-level) - Optional, kept for compatibility
     budget = config.get('budget_daily', 0.0)
     spent = config.get('current_spend_daily', 0.0)
     
     if budget > 0:
         if spent + cost_est > budget:
-            logger.warning(f"💸 Budget Exceeded for {x_function_id}")
-            raise HTTPException(402, f"Daily budget exceeded for '{x_function_id}'")
+            logger.warning(f"💸 Function Budget Exceeded for {x_function_id}")
+            raise HTTPException(402, f"Daily budget exceeded for function '{x_function_id}'")
 
     # C. Limpieza de Datos (PII Guard - Rust Hybrid)
     # Limpiamos los datos SIEMPRE, vaya a OpenAI o a Localhost
@@ -405,9 +412,14 @@ async def universal_proxy(
         
         # Enviamos al sistema central de facturación (Analytics + Worker)
         # IMPORTANTE: Pasamos function_id en metadata para que el worker actualice el presupuesto fantasma
+        
+        # 🌊 WATERFALL CHARGE (Atomic Decrement)
+        # Esto descuenta el dinero de los 3 niveles REALES en Redis
+        asyncio.create_task(charge_hierarchical_wallets(identity, real_cost))
+
         await record_transaction(
             tenant_id=tenant_id, 
-            cost_center_id="default_cost_center", # O podriamos sacarlo de alguna parte, default ok para proxy
+            cost_center_id=identity.dept_id or "default", # Usamos el ID real del Depto
             cost_real=real_cost, 
             metadata={
                 "function_id": x_function_id,
@@ -415,7 +427,8 @@ async def universal_proxy(
                 "original_model": original_model,
                 "upstream": api_base or "cloud",
                 "tokens_in": input_tokens,
-                "tokens_out": output_tokens
+                "tokens_out": output_tokens,
+                "user_email": identity.email # Audit trail
             }
         )
 

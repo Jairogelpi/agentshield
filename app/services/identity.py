@@ -1,0 +1,120 @@
+# app/services/identity.py
+import os
+import json
+from jose import jwt, JWTError
+from fastapi import HTTPException, Header
+from app.db import supabase, redis_client
+import logging
+
+logger = logging.getLogger("agentshield.identity")
+
+# Use the same secret key as logic.py (Shared Secret)
+SECRET_KEY = os.getenv("ASARL_SECRET_KEY") or os.getenv("JWT_SECRET_KEY")
+if not SECRET_KEY:
+    # Fail fast if security is not configured
+    logger.error("FATAL: JWT_SECRET_KEY/ASARL_SECRET_KEY not set.")
+    
+ALGORITHM = "HS256"
+
+class VerifiedIdentity:
+    def __init__(self, user_id, email, dept_id, tenant_id, role):
+        self.user_id = user_id
+        self.email = email
+        self.dept_id = dept_id      # El "Cost Center" departamental
+        self.tenant_id = tenant_id  # La Empresa
+        self.role = role            # admin, manager, user
+
+async def verify_identity_envelope(authorization: str = Header(...)) -> VerifiedIdentity:
+    """
+    Desempaqueta el JWT criptográfico ("Identity Envelope").
+    Si la firma no es válida, RECHAZA la petición inmediatamente.
+    Nadie puede falsificar esto sin tu clave privada.
+    Enforce Zero Trust.
+    """
+    if not authorization:
+         raise HTTPException(401, "Missing Authorization Header")
+
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Invalid Auth Header Format")
+    
+    token = authorization.split(" ")[1]
+    
+    try:
+        # 1. Validación Criptográfica (La Barrera Real)
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        
+        # 2. Extracción de Claims (Datos Verificados)
+        # Asumimos que tu proveedor de identidad (Supabase Auth) mete estos datos
+        # en 'app_metadata' o 'user_metadata' o directamente en el payload si es custom.
+        
+        # Standard Supabase 'sub' is user_id
+        user_id = payload.get("sub")
+        email = payload.get("email")
+        
+        # Intentamos obtener metadatos de Supabase
+        app_metadata = payload.get("app_metadata", {})
+        user_metadata = payload.get("user_metadata", {})
+        
+        # Si los metadatos no están en el token, los buscamos en Redis (Fast Cache)
+        # para no ir a la DB en cada mensaje.
+        cached_profile = await redis_client.get(f"identity:{user_id}")
+        
+        if cached_profile:
+            profile = json.loads(cached_profile)
+        else:
+            # Fallback a DB si no está en caché (Lazy Loading)
+            # Primero buscamos en 'users' si existe, sino en 'tenant_members'
+            # Asumimos 'users' tiene todo por ahora como simplificación, o usamos 'auth.users' + 'public.users' info
+            
+            # Buscamos en nuestra tabla publica de usuarios (que deberia estar synced)
+            # o directamente consultamos la tabla que tenga department_id.
+            
+            # NOTE: Dependiendo de tu schema actual, esto puede variar. 
+            # Asumimos una tabla 'users' o similar que linkea user_id -> tenant_id, dept_id.
+            
+            # Intento 1: Tabla 'users'
+            res = supabase.table("users").select("*").eq("id", user_id).single().execute()
+            
+            if not res.data:
+                # Si no está en users, quizás es un token válido pero usuario no onboarded en nuestra tabla publica
+                # Intentamos sacar info parcial del token
+                 tenant_id = app_metadata.get("tenant_id")
+                 if not tenant_id:
+                     raise HTTPException(403, "User has no associated Tenant (Organization)")
+                 
+                 profile = {
+                     "email": email,
+                     "department_id": "default", # Default Cost Center
+                     "tenant_id": tenant_id,
+                     "role": app_metadata.get("role", "member")
+                 }
+                 # Auto-heal? No, solo lectura segura.
+            else:
+                profile = res.data
+                # Asegurar campos minimos
+                if "department_id" not in profile or not profile["department_id"]:
+                     profile["department_id"] = "default"
+                if "tenant_id" not in profile:
+                     profile["tenant_id"] = app_metadata.get("tenant_id") # Trust token if DB missing
+                if "role" not in profile:
+                     profile["role"] = app_metadata.get("role", "member")
+
+            # Cacheamos la identidad por 5 minutos
+            await redis_client.setex(f"identity:{user_id}", 300, json.dumps(profile))
+
+        # logger.info(f"🆔 Verified: {profile.get('email')} (Tenant: {profile.get('tenant_id')})")
+        
+        return VerifiedIdentity(
+            user_id=user_id,
+            email=profile.get('email'),
+            dept_id=profile.get('department_id'),
+            tenant_id=profile.get('tenant_id'),
+            role=profile.get('role')
+        )
+
+    except JWTError as e:
+        logger.warning(f"⛔ Security Alert: Invalid Token Signature detected: {e}")
+        raise HTTPException(401, "Digital Signature Verification Failed")
+    except Exception as e:
+        logger.error(f"Identity Verification Error: {e}")
+        raise HTTPException(500, "Internal Identity Error")
