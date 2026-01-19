@@ -306,6 +306,35 @@ async def universal_proxy(
         )
         target_model = response.get("model", target_tier) 
         
+        # --- 🛡️ TOOL GOVERNOR (Control de Acciones) ---
+        # Interceptamos si el LLM quiere ejecutar herramientas
+        # Nota: Litellm devuelve ModelResponse que actúa como dict o objeto
+        choices = response.get("choices", [])
+        if choices:
+            message = choices[0].get("message", {})
+            tool_calls = message.get("tool_calls")
+            
+            if tool_calls:
+                from app.services.tool_governor import governor
+                logger.info("🛠️ Tool Calls Detected. Engaging Governor.")
+                
+                # INSPECCIÓN Y SANITIZACIÓN
+                # 'tool_calls' es una lista de objetos/dict. Governor espera lista de dicts.
+                # Si son objetos de litellm, los convertimos a dict si es necesario, pero start with raw pass
+                # Assuming simple objects compatible with dict access or pydantic models
+                
+                # Convert active helper objects to dicts if needed
+                tool_calls_dicts = [t if isinstance(t, dict) else t.model_dump() for t in tool_calls]
+                
+                safe_tool_calls = await governor.inspect_tool_calls(
+                    identity, 
+                    tool_calls_dicts
+                )
+                
+                # Reemplazamos las llamadas originales por las filtradas
+                # Modificamos el objeto response in-place
+                response["choices"][0]["message"]["tool_calls"] = safe_tool_calls
+
     except ProviderError as e:
         logger.critical(f"🔥 TOTAL OUTAGE for {identity.email}: {e}")
         raise HTTPException(status_code=503, detail="Service currently unavailable due to upstream provider outage.")
