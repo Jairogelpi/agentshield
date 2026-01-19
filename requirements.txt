@@ -25,12 +25,9 @@ fpdf2
 orjson
 rapidfuzz
 
-# --- MOTOR AI (VERSIÓN CPU OPTIMIZADA - < 300MB) ---
-# Esto reduce el tamaño de la imagen en un 80%
---extra-index-url https://download.pytorch.org/whl/cpu
-torch
-torchvision
-# sentence-transformers
+# --- MOTOR AI (VERSIÓN CPU OPTIMIZADA) ---
+# Eliminamos torch/torchvision para ahorrar ~500MB de RAM/Espacio.
+# FlashRank y PII Guard usan ONNX Runtime directamente.
 flashrank
 
 # --- SOVEREIGN AI (LOCAL INFERENCE) ---

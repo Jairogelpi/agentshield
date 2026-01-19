@@ -125,17 +125,24 @@ async def lifespan(app: FastAPI):
     # 4. WARMUP (Modelos en Memoria tras arranque exitoso)
     # Esperamos un poco para que Granian bindee el puerto primero y pase el Health Check de Render
     async def warmup_models():
-        """Simula (o realiza) la carga de modelos pesados en RAM."""
+        """Carga secuencial de modelos para evitar picos de RAM en el arranque."""
         logger.info("⏳ Warming up local AI models (Embeddings, PII Guard, Reranker)...")
         try:
-            from app.services.cache import get_embedding_model
-            from app.services.pii_guard import get_pii_engine
+            from app.services.cache import get_embedding
+            from app.services.pii_guard import redact_pii_sync
             from app.services.reranker import get_reranker_model
-            # Force load
-            await asyncio.to_thread(get_embedding_model)
-            await asyncio.to_thread(get_pii_engine)
+            
+            # 1. Reranker (ONNX)
+            logger.info("  -> Loading Reranker...")
             await asyncio.to_thread(get_reranker_model)
             
+            # 2. PII Guard (Rust/ONNX)
+            logger.info("  -> Initializing PII Guard...")
+            await asyncio.to_thread(redact_pii_sync, "Warmup check")
+            
+            # Embeddings no necesitan warmup manual si son llamadas a API (LiteLLM)
+            # Pero inicializamos el índice de Redis (ya lo hace init_semantic_cache_index)
+
             global MODELS_LOADED
             MODELS_LOADED = True
             logger.info("✅ AI Models Ready in Memory! System Fully Operational.")

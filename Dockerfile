@@ -26,7 +26,6 @@ RUN maturin build --release --strip
 WORKDIR /app
 COPY requirements.txt .
 RUN uv pip install --system --compile-bytecode \
-    --extra-index-url https://download.pytorch.org/whl/cpu \
     -r requirements.txt \
     rust_module/target/wheels/*.whl
 
@@ -44,8 +43,7 @@ FROM python:3.13-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONOPTIMIZE=1 \
-    # HF_HOME define donde busca FlashRank por defecto si no se le pasa cache_dir,
-    # pero aquí lo estamos moviendo a /opt/models y el código usa cache_dir=/opt/models explícitamente.
+    MALLOC_ARENA_MAX=2 \
     HF_HOME=/opt/models \
     TRANSFORMERS_OFFLINE=1 
 
@@ -69,5 +67,5 @@ RUN useradd -m appuser && \
 
 USER appuser
 
-# Comando de arranque
-CMD ["sh", "-c", "granian --interface asgi app.main:app --host 0.0.0.0 --port ${PORT:-10000} --workers ${WEB_CONCURRENCY:-1}"]
+# Comando de arranque: 1 worker para evitar OOM en tier de 512MB
+CMD ["sh", "-c", "granian --interface asgi app.main:app --host 0.0.0.0 --port ${PORT:-10000} --workers 1 --threads 2"]
