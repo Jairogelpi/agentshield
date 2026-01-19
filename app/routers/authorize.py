@@ -126,7 +126,10 @@ async def authorize_transaction(
     req: AuthorizeRequest, 
     tenant_id: str = Depends(get_tenant_from_header)
 ):
-    # 0. Contexto
+    # 0. Contexto & Compliance SOBERANO (2026)
+    from app.logic import verify_residency
+    await verify_residency(tenant_id) # Bloqueo 451 si la región no coincide
+    
     policy = await get_active_policy(tenant_id)
     current_spend = await get_current_spend(tenant_id, req.cost_center_id)
 
