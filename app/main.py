@@ -285,7 +285,9 @@ app.include_router(analytics.router)
 app.include_router(audit.router)
 app.include_router(audit.router)
 app.include_router(embeddings.router)
-app.include_router(feedback.router) # 🧠 Learning Loop
+app.include_router(feedback.router)
+app.include_router(admin_chat.router)
+app.include_router(tools.router) # Governance API # 🧠 Learning Loop
 
 # Endpoint de salud para Render (ping)
 # Endpoint de salud para Render (Deep Health Check)
