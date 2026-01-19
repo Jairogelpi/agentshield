@@ -15,15 +15,30 @@ class MultimodalEstimator:
     """
     
     def __init__(self):
-        # 1. FALLBACKS (Solo para el "Cold Start" o si Redis muere)
+        # 1. FALLBACKS ACTUALIZADOS 2026 (Estado del Arte)
+        # Estos ratios representan la media de tokens de SALIDA por cada token de ENTRADA.
         self.fallback_ratios = {
-            "TEXT_SUMMARIZATION": 0.4,
-            "TEXT_EXTRACTION": 0.1,
-            "TEXT_TRANSLATION": 1.2, 
-            "CODE_GENERATION": 2.5,
-            "CREATIVE_WRITING": 1.5,
-            "CHAT_CONVERSATIONAL": 1.0,
-            "DEFAULT": 1.0
+            # --- Tareas de Texto ---
+            "TEXT_SUMMARIZATION": 0.35,     # Los modelos modernos son más eficientes resumiendo.
+            "TEXT_EXTRACTION": 0.45,        # El formato JSON y Markdown añade mucho peso.
+            "TEXT_TRANSLATION": 1.35,       # Las traducciones a idiomas romances (ES/FR/IT) suelen expandirse un 35%.
+            "TEXT_ANALYSIS_CRITIQUE": 1.80, # Análisis detallado de documentos.
+            
+            # --- Generación Proactiva ---
+            "CREATIVE_WRITING": 4.50,       # Los modelos actuales generan mucha literatura si se les pide escribir.
+            "CODE_GENERATION": 3.80,        # Incluye comentarios, lógica de tests y boilerplate.
+            "CHAT_CONVERSATIONAL": 1.60,    # Por la cortesía y explicaciones adicionales.
+            
+            # --- Razonamiento Profundo (Nueva Categoría 2026) ---
+            "DEEP_REASONING": 12.0,         # Para modelos tipo o1/o3 o DeepSeek-R1 (tokens de "pensamiento").
+            "LOGIC_PUZZLE": 5.0,            # Resolución de problemas lógicos complejos.
+            
+            # --- Multimodal (Input: Texto/Imagen -> Output: Texto) ---
+            "VISION_DESCRIPTION": 0.80,     # Descripción de imágenes basada en tokens visuales.
+            "DOCUMENT_PARSING": 0.60,       # Extracción de texto de PDFs/Imágenes.
+            
+            # --- Default ---
+            "DEFAULT": 1.25
         }
 
     async def _resolve_price(self, model: str) -> tuple[float, float]:
