@@ -90,3 +90,24 @@ async def upload_file(
     except Exception as e:
         logger.error(f"File upload failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/v1/files")
+async def list_files(
+    identity: VerifiedIdentity = Depends(verify_identity_envelope)
+):
+    """
+    Lista los documentos del Vault visibles para el usuario.
+    """
+    try:
+        from app.db import supabase
+        # Consulta segura: Solo docs del tenant
+        res = supabase.table("vault_documents")\
+            .select("id, filename, classification, created_at, owner_dept_id")\
+            .eq("tenant_id", identity.tenant_id)\
+            .order("created_at", desc=True)\
+            .execute()
+            
+        return res.data
+    except Exception as e:
+        logger.error(f"List files failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

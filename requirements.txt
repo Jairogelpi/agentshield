@@ -24,6 +24,7 @@ numpy
 fpdf2
 orjson
 rapidfuzz
+tenacity
 
 # --- MOTOR AI (VERSIÓN CPU OPTIMIZADA) ---
 # Eliminamos torch/torchvision para ahorrar ~500MB de RAM/Espacio.

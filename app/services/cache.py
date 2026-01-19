@@ -64,8 +64,82 @@ async def init_semantic_cache_index():
     except Exception as e:
         logger.warning(f"Semantic Cache Index Init Warning: {e}")
 
+# app/services/cache.py
 import hashlib
 import json
+from app.db import redis_client
+import logging
+
+logger = logging.getLogger("agentshield.cache")
+
+# --- SMART CACHING (NORMALIZED HASH) ---
+async def get_smart_cache_key(messages: list, model_tier: str, tenant_id: str) -> str:
+    """
+    Genera una clave de caché inteligente.
+    Ignora mayúsculas, espacios extra y puntuación para aumentar el 'Cache Hit Rate'.
+    """
+    if not messages: return None
+    
+    # Solo cacheamos el último mensaje del usuario para RAG simple o Q&A
+    last_msg = messages[-1].get('content', '')
+    if not isinstance(last_msg, str): return None
+    
+    # Normalización (Enterprise trick)
+    normalized_content = "".join(e for e in last_msg if e.isalnum()).lower()
+    
+    # Hash seguro
+    content_hash = hashlib.sha256(normalized_content.encode()).hexdigest()
+    
+    # La clave incluye el tenant (para no filtrar datos entre empresas) y el modelo
+    return f"cache:{tenant_id}:{model_tier}:{content_hash}"
+
+async def check_cache(messages: list, model_tier: str, tenant_id: str):
+    key = await get_smart_cache_key(messages, model_tier, tenant_id)
+    if not key: return None
+    
+    try:
+        cached_raw = await redis_client.get(key)
+        if cached_raw:
+            return json.loads(cached_raw)
+    except Exception as e:
+        logger.warning(f"Cache get failed: {e}")
+    return None
+
+async def set_cache(messages: list, model_tier: str, tenant_id: str, response: dict):
+    """
+    Guarda en caché con TTL dinámico.
+    Respuestas complejas (Smart) viven más tiempo que las rápidas (Fast).
+    """
+    key = await get_smart_cache_key(messages, model_tier, tenant_id)
+    if not key: return
+
+    # TTL Dinámico
+    ttl = 3600 # 1 hora default
+    if "smart" in model_tier:
+        ttl = 86400 # 24 horas para GPT-4 (es caro, vale la pena guardar)
+    
+    try:
+        # response might be a Pydantic model from litellm, need ensuring it is dict/json serializable
+        # If it is a Pydantic model (ModelResponse), .json() or .dict() works.
+        # But set_cache might receive a dict from proxy.
+        if hasattr(response, 'json') and callable(response.json):
+             val = response.json()
+        elif hasattr(response, 'dict') and callable(response.dict):
+             val = json.dumps(response.dict())
+        else:
+             val = json.dumps(response)
+             
+        await redis_client.setex(key, ttl, val)
+    except Exception as e:
+        logger.warning(f"Cache set failed: {e}")
+
+# --- LEGACY / SEMANTIC EXPORTS (Keeping placeholders if needed by other files) ---
+async def get_semantic_cache(*args, **kwargs):
+    # Placeholder to prevent import errors if proxy.py still references it before full update
+    pass
+
+async def set_semantic_cache(*args, **kwargs):
+    pass
 from app.services.reranker import verify_cache_logic
 
 async def get_semantic_cache(prompt: str, threshold: float = 0.90, tenant_id: str = "*"):

@@ -66,6 +66,8 @@ El sistema se despliega como un SaaS completo (Zero Install):
 *   [**3. Motor Financiero**](documentation/03_FINANCIERO.md)
 *   [**4. Proxy Router**](documentation/04_PROXY.md)
 *   [**6. Estrategia Frontend**](documentation/06_FRONTEND_STRATEGY.md)
+*   [**7. Secure RAG Vault**](documentation/07_SECURE_RAG_VAULT.md)
+*   [**8. Evolutionary AI**](documentation/08_EVOLUTIONARY_AI.md)
 
 ---
 
