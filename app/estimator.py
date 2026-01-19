@@ -150,6 +150,17 @@ class MultimodalEstimator:
             num_images = max(1, int(input_unit_count)) 
             return unit_price * num_images
 
+        # --- SOPORTE VISION (GPT-4o / Turbo) ---
+        # Si el proxy detectó imágenes, cobramos el extra.
+        # Coste aprox: $0.003825/img (1080p high detail avg)
+        # Esto se suma al coste de tokens de texto.
+        vision_cost = 0.0
+        image_count = metadata.get("image_count", 0)
+        if image_count > 0:
+             vision_cost = image_count * 0.003825
+             # Podríamos ajustar ratio si hay imágenes (menos texto output relativo?)
+             # ratio = 0.8 # Ya definido en fallback "VISION_DESCRIPTION"
+
         # --- LÓGICA DE TEXTO ACTUALIZADA ---
         price_in, price_out = await self._resolve_price(model)
         
@@ -163,7 +174,7 @@ class MultimodalEstimator:
         est_output_tokens = int(input_unit_count * ratio)
         est_output_tokens = min(est_output_tokens, 16000) # Hard Cap actualizado a modelos nuevos
 
-        total_cost_usd = (input_unit_count * price_in) + (est_output_tokens * price_out)
+        total_cost_usd = (input_unit_count * price_in) + (est_output_tokens * price_out) + vision_cost
         
         # Conversión de divisa
         try:

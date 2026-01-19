@@ -89,8 +89,19 @@ async def universal_proxy(
     except:
         input_tokens_est = sum(len(m.get('content', '')) for m in messages) / 4
 
+    # 1.5. DETECCIÓN MULTIMODAL (Vision)
+    # Contamos imágenes para ajustar el presupuesto
+    num_images = sum(
+        1 for m in messages 
+        if isinstance(m.get('content'), list) 
+        and any(x.get('type') == 'image_url' for x in m['content'])
+    )
+
     cost_est_policy = await estimator.estimate_cost(
-        model=original_model, task_type="COMPLETION", input_unit_count=input_tokens_est
+        model=original_model, 
+        task_type="COMPLETION", 
+        input_unit_count=input_tokens_est,
+        metadata={"image_count": num_images}
     )
 
     # 2. Construimos Contexto de Política
@@ -145,7 +156,8 @@ async def universal_proxy(
     cost_est = await estimator.estimate_cost(
         model=body.get("model", original_model), # Could have changed due to downgrade 
         task_type="COMPLETION", 
-        input_unit_count=input_tokens
+        input_unit_count=input_tokens,
+        metadata={"image_count": num_images}
     )
 
 
