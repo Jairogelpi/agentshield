@@ -68,4 +68,4 @@ RUN useradd -m appuser && \
 USER appuser
 
 # Comando de arranque: 1 worker para evitar OOM en tier de 512MB
-CMD ["sh", "-c", "granian --interface asgi app.main:app --host 0.0.0.0 --port ${PORT:-10000} --workers 1 --threads 2"]
+CMD ["sh", "-c", "granian --interface asgi app.main:app --host 0.0.0.0 --port ${PORT:-10000} --workers 1 --blocking-threads 2"]
