@@ -4,6 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "agentshield_rust"
+dynamic = ["version"]
 requires-python = ">=3.10"
 classifiers = [
     "Programming Language :: Rust",
