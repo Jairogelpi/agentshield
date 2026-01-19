@@ -5,8 +5,47 @@ import asyncio
 import numpy as np
 import time
 from litellm import completion
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
+import agentshield_rust
+import onnxruntime as ort
 
 logger = logging.getLogger("agentshield.pii_guard")
+tracer = trace.get_tracer(__name__)
+
+# Constants
+PII_MODEL_API = os.getenv("PII_MODEL_API", "gpt-3.5-turbo")
+PII_MODEL_PATH = os.getenv("PII_MODEL_PATH", "/opt/models/pii_model.onnx")
+
+def fast_regex_scrub(text: str) -> str:
+    """Usa el motor de Rust para limpieza ultra-rápida."""
+    return agentshield_rust.scrub_pii_fast(text)
+
+class PIIEngine:
+    _instance = None
+    
+    def __init__(self):
+        self.session = None
+        if os.path.exists(PII_MODEL_PATH):
+            try:
+                self.session = ort.InferenceSession(PII_MODEL_PATH)
+                logger.info(f"✅ PII Local Engine loaded from {PII_MODEL_PATH}")
+            except Exception as e:
+                logger.error(f"Failed to load PII ONNX model: {e}")
+
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def predict(self, text: str) -> str:
+        # Placeholder for ONNX inference logic
+        # Si no hay modelo, devolvemos el texto (la Capa 1 ya hizo el regex)
+        return text
+
+def get_pii_engine():
+    return PIIEngine.get_instance()
 
 def redact_pii_sync(text: str, tenant_id: str = "unknown") -> str:
     """

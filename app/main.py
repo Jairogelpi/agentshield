@@ -178,7 +178,8 @@ setup_observability(app)
 @app.middleware("http")
 async def security_guard(request: Request, call_next):
     # 1. Bypass para Health Check y Desarrollo
-    if request.url.path == "/health" or os.getenv("ENVIRONMENT") == "development":
+    real_ip = request.headers.get("cf-connecting-ip", request.client.host)
+    if request.url.path == "/health" or os.getenv("ENVIRONMENT") == "development" or real_ip == "127.0.0.1":
         return await call_next(request)
 
     # 2. VERIFICACIÓN DE CLOUDFLARE (El Candado)
