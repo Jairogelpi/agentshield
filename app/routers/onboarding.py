@@ -95,5 +95,63 @@ async def signup_tenant(req: SignupRequest):
             "message": "Guarda esta clave en lugar seguro."
         }
         
+
+# --- AUTH HELPERS FOR ONBOARDING ---
+from fastapi import Security, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+security = HTTPBearer()
+
+async def get_user_id_from_jwt(credentials: HTTPAuthorizationCredentials = Security(security)):
+    """
+    Valida el token pero NO requiere tener un tenant asociado.
+    """
+    token = credentials.credentials
+    try:
+        user_response = supabase.auth.get_user(token)
+        return user_response.user.id
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Signup failed: {str(e)}")
+        raise HTTPException(status_code=401, detail="Invalid Session")
+
+@router.get("/v1/onboarding/organizations")
+async def list_my_organizations(user_id: str = Depends(get_user_id_from_jwt)):
+    """
+    Devuelve la lista de organizaciones donde el usuario es Owner o Miembro.
+    """
+    # 1. Buscar como Owner
+    owned = supabase.table("tenants").select("*").eq("owner_id", user_id).execute()
+    
+    # 2. Buscar como Miembro (TODO: Implementar tabla 'tenant_members')
+    # Por ahora solo soportamos Owner para el MVP
+    
+    return owned.data
+
+class InviteRequest(BaseModel):
+    email: str
+    role: str = "member"
+
+@router.post("/v1/onboarding/invite")
+async def invite_member(req: InviteRequest, user_id: str = Depends(get_user_id_from_jwt)):
+    """
+    Invita a un miembro a la organización del usuario actual.
+    """
+    # 1. Obtener la organización del usuario (Asumimos la primera que tenga como Owner para MVP)
+    # En el futuro, el frontend debería enviar el tenant_id contextualmente.
+    orgs = supabase.table("tenants").select("id, name").eq("owner_id", user_id).execute()
+    
+    if not orgs.data:
+        raise HTTPException(status_code=400, detail="You need to create an organization first.")
+        
+    tenant = orgs.data[0]
+    
+    # 2. (Simulación) Enviar Email
+    # Aquí iría la lógica de `resend` o `sendgrid`
+    # Por ahora solo insertamos en una tabla de 'invites' si existiera, o devolvemos OK
+    
+    # Simulated response
+    return {
+        "status": "invited",
+        "email": req.email,
+        "tenant_id": tenant['id'],
+        "tenant_name": tenant['name'],
+        "message": f"Invitation sent to {req.email}"
+    }
