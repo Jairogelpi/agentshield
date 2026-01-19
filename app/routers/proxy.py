@@ -36,7 +36,11 @@ async def universal_proxy(
     
     # 1. AUTENTICACIÓN: Garantizada por 'identity' (Cryptographically Signed)
     tenant_id = identity.tenant_id
-    logger.info(f"🔒 Secure Request from {identity.email} (Dept: {identity.dept_id})")
+    
+    # 1.1. TRAZABILIDAD FORENSE (La Aguja en el Pajar)
+    import uuid
+    trace_id = f"trc_{uuid.uuid4().hex[:12]}"
+    logger.info(f"🔒 Secure Request {trace_id} from {identity.email} (Dept: {identity.dept_id})")
 
     # 2. AUTODESCUBRIMIENTO (La Magia)
     # Buscamos la configuración específica para esta función/script del cliente
@@ -112,7 +116,9 @@ async def universal_proxy(
         role=identity.role,
         model=original_model,
         estimated_cost=cost_est_policy,
-        intent="general" # Conecta aqui tu clasificador
+        estimated_cost=cost_est_policy,
+        intent="general", # Conecta aqui tu clasificador
+        metadata={"trace_id": trace_id} # 🕵️ Rastreo en Logs de Política
     )
 
     # 3. Evaluamos (Shadow & Enforce) - Cacheado en Redis
@@ -336,7 +342,18 @@ async def universal_proxy(
                 # Assuming simple objects compatible with dict access or pydantic models
                 
                 # Convert active helper objects to dicts if needed
-                tool_calls_dicts = [t if isinstance(t, dict) else t.model_dump() for t in tool_calls]
+                tool_calls_dicts = []
+                for t in tool_calls:
+                    d = t if isinstance(t, dict) else t.model_dump()
+                    # INYECCIÓN FORENSE: Marcamos los argumentos con el ID de traza
+                    # Esto permite al Forensics Service encontrar qué herramienta pertenece a qué chat
+                    try:
+                        args = json.loads(d['function']['arguments'])
+                        args['_trace_id'] = trace_id
+                        d['function']['arguments'] = json.dumps(args)
+                    except:
+                        pass # Si falla el parseo, seguimos sin traza en args
+                    tool_calls_dicts.append(d)
                 
                 safe_tool_calls = await governor.inspect_tool_calls(
                     identity, 
@@ -466,7 +483,8 @@ async def universal_proxy(
                 tenant_id=tenant_id,
                 user_email=identity.email,
                 transaction_data=tx_data,
-                policy_snapshot=policy_snapshot
+                policy_snapshot=policy_snapshot,
+                trace_id=trace_id # 🔗 ESLABÓN PERDIDO CONECTADO
             )
         )
 
@@ -475,6 +493,7 @@ async def universal_proxy(
             cost_center_id=identity.dept_id or "default", # Usamos el ID real del Depto
             cost_real=real_cost, 
             metadata={
+                "trace_id": trace_id, # 🕵️ Rastreo Financiero
                 "function_id": x_function_id,
                 "model": target_model,
                 "original_model": original_model,
@@ -577,4 +596,8 @@ async def universal_proxy(
     else:
         # Respuesta normal JSON
         await post_process(response)
-        return JSONResponse(content=json.loads(response.json()))
+        
+        # Inyectamos el ID en los headers para que el frontend pueda pedir el Replay
+        final_response = JSONResponse(content=json.loads(response.json()))
+        final_response.headers["X-AgentShield-Trace-ID"] = trace_id
+        return final_response

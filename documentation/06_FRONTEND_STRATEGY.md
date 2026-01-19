@@ -28,10 +28,10 @@ Ubicación: `agentshield_frontend/src/app/(dashboard)`
 
 ### A. Gobernanza y Políticas ("Security View")
 **Ruta**: `src/app/(dashboard)/dashboard/policies/page.tsx`
-**Estado**: ✅ En Desarrollo (Fase 5)
+**Estado**: ✅ Implementado (Fase 5 Completada - Magic Layer Activo)
 
 #### Estrategia
-Dar al CISO el poder de simular antes de bloquear ("Shadow Mode").
+Dar al CISO el poder de simular antes de bloquear ("Shadow Mode") y crear reglas con lenguaje natural ("Policy Copilot").
 
 #### Detalles de Implementación
 -   **Tablas**: `policies` y `policy_events` (Supabase).

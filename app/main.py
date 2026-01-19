@@ -274,6 +274,7 @@ app.add_middleware(
 # 2. Conectar Routers
 from app.routers import proxy, dashboard, authorize, onboarding, compliance, analytics, audit, receipt
 from app.routers import proxy, dashboard, authorize, onboarding, compliance, analytics, audit, receipt, embeddings, feedback
+from app.routers import admin_chat, tools, images, forensics
 
 app.include_router(authorize.router)
 app.include_router(receipt.router)
@@ -289,7 +290,8 @@ app.include_router(feedback.router)
 app.include_router(admin_chat.router)
 app.include_router(tools.router) 
 app.include_router(images.router) # 🎨 DALL-E
-# app.include_router(feedback.router) # 🧠 Learning Loop # 🧠 Learning Loop
+app.include_router(forensics.router) # 🕵️ CSI Mode
+# app.include_router(feedback.router) # 🧠 Learning Loop
 
 # Endpoint de salud para Render (ping)
 # Endpoint de salud para Render (Deep Health Check)

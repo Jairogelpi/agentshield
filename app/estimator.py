@@ -138,28 +138,35 @@ class MultimodalEstimator:
              # --- CASO 1: GENERACIÓN DE IMÁGENES (Precio por Item) ---
             # Detectar si es HD
             quality = metadata.get("quality", "standard")
-            price_key = f"{model}-{quality}" if quality == "hd" else model
+            # Construimos clave compuesta para buscar en DB (ej: 'dall-e-3-hd')
+            # Si no existe, fallback a 'dall-e-3'
+            price_key = f"{model}-{quality}".lower()
             
-            # Usamos price_in como "cost per unit"
+            # Usamos price_in como "cost per unit" (Input Unit = 1 Image)
             unit_price, _ = await self._resolve_price(price_key) 
+            
             if unit_price == 0: 
                  # Fallback a búsqueda directa del modelo base si la key compuesta falla
                  unit_price, _ = await self._resolve_price(model)
             
+            # Fallback de seguridad extrema si DB está vacía (evitar $0)
+            if unit_price == 0:
+                unit_price = 0.080 if quality == "hd" else 0.040
+
             # input_unit_count aquí es número de imágenes
             num_images = max(1, int(input_unit_count)) 
             return unit_price * num_images
 
         # --- SOPORTE VISION (GPT-4o / Turbo) ---
-        # Si el proxy detectó imágenes, cobramos el extra.
-        # Coste aprox: $0.003825/img (1080p high detail avg)
-        # Esto se suma al coste de tokens de texto.
+        # Coste dinámico basado en DB (clave: 'vision-image-avg')
         vision_cost = 0.0
         image_count = metadata.get("image_count", 0)
         if image_count > 0:
-             vision_cost = image_count * 0.003825
-             # Podríamos ajustar ratio si hay imágenes (menos texto output relativo?)
-             # ratio = 0.8 # Ya definido en fallback "VISION_DESCRIPTION"
+             # Buscamos precio promedio por imagen en DB
+             v_price, _ = await self._resolve_price("vision-image-avg")
+             if v_price == 0: v_price = 0.003825 # Fallback seguridad
+             
+             vision_cost = image_count * v_price
 
         # --- LÓGICA DE TEXTO ACTUALIZADA ---
         price_in, price_out = await self._resolve_price(model)

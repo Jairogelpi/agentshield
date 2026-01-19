@@ -29,11 +29,16 @@ async def proxy_images(
     quality = body.get("quality", "standard")
     
     # 1. GOBIERNO FINANCIERO (Presupuesto)
-    # DALL-E 3 Standard: $0.040 / img
-    # DALL-E 3 HD: $0.080 / img
-    estimated_cost = 0.040 
-    if quality == "hd":
-        estimated_cost = 0.080
+    # Calculamos coste dinámico usando el Estimador (consulta DB/Redis)
+    from app.estimator import estimator
+    
+    # input_unit_count=1 (1 imagen)
+    estimated_cost = await estimator.estimate_cost(
+        model=model, 
+        task_type="IMG_GENERATION", 
+        input_unit_count=1,
+        metadata={"quality": quality, "size": size}
+    )
         
     # Verificar si el usuario tiene fondos
     can_spend, msg = await check_hierarchical_budget(identity, estimated_cost)
