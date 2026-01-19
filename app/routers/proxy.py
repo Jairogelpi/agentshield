@@ -76,33 +76,68 @@ async def universal_proxy(
     messages = body.get("messages", [])
     stream = body.get("stream", False)
     
-    # B.0. POLÍTICA DE MODELOS (Allowlist Enforcement)
-    # Recuperamos la política activa (cacheada en Redis)
-    from app.logic import get_active_policy
-    policy_rules = await get_active_policy(tenant_id)
+    messages = body.get("messages", [])
+    stream = body.get("stream", False)
     
-    allowed_models = policy_rules.get("allowlist", {}).get("models", [])
+    # B.0. POLÍTICA DE MODELOS & REGLAS DINÁMICAS (The Policy Engine)
+    # -------------------------------------------------------------
+    from app.services.policy_engine import evaluate_policies, log_policy_events, PolicyContext
     
-    # Si la lista NO está vacía, aplicamos restricción estricta
-    if allowed_models and original_model not in allowed_models:
-        # Check si es un modelo "wildcard" (ej: "gpt-*") o match exacto
-        # Para MVP, match exacto:
-        logger.warning(f"⛔ Policy Violation: Model {original_model} not allowed for {tenant_id}")
-        raise HTTPException(403, f"Model '{original_model}' is restricted by your organization policy.")
-
-    # B. Control de Presupuesto (Solo si tiene límite)
-    # Calculamos coste estimado ANTES de enviar nada
-    # Usamos litellm tokenizer para mayor precisión
+    # 1. Calculamos tokens estimados para la regla (cost check)
     try:
-        input_tokens = token_counter(model=original_model, messages=messages)
+        input_tokens_est = token_counter(model=original_model, messages=messages)
     except:
-        input_tokens = sum(len(m.get('content', '')) for m in messages) / 4 # Heuristica
+        input_tokens_est = sum(len(m.get('content', '')) for m in messages) / 4
 
+    cost_est_policy = await estimator.estimate_cost(
+        model=original_model, task_type="COMPLETION", input_unit_count=input_tokens_est
+    )
+
+    # 2. Construimos Contexto de Política
+    policy_ctx = PolicyContext(
+        user_id=identity.user_id,
+        user_email=identity.email,
+        dept_id=str(identity.dept_id or ""), # Handle None
+        role=identity.role,
+        model=original_model,
+        estimated_cost=cost_est_policy,
+        intent="general" # Conecta aqui tu clasificador
+    )
+
+    # 3. Evaluamos (Shadow & Enforce) - Cacheado en Redis
+    policy_result = await evaluate_policies(str(tenant_id), policy_ctx)
+
+    # 4. GUARDAR EVIDENCIA (Background - No bloquea)
+    background_tasks.add_task(log_policy_events, str(tenant_id), policy_ctx, policy_result)
+
+    # A. BLOQUEO REAL (Enforce)
+    if policy_result.should_block:
+        logger.warning(f"🛡️ POLICY BLOCK: {policy_result.violation_msg}")
+        raise HTTPException(status_code=403, detail=f"AgentShield Policy: {policy_result.violation_msg}")
+
+    # B. MODIFICACIÓN REAL (Enforce Downgrade)
+    if policy_result.action == "DOWNGRADE":
+        new_mod = policy_result.modified_model
+        if new_mod:
+            body["model"] = new_mod
+            logger.info(f"📉 Policy Downgrade applied: {original_model} -> {new_mod}")
+            target_model = new_mod 
+            forced = new_mod 
+
+    # End Policy Engine Logic
+    # -------------------------------------------------------------
+
+    # B. Control de Presupuesto (Solo si tiene límite) - Legacy & Waterfall
+    # Calculamos coste estimado ANTES de enviar nada
+    input_tokens = input_tokens_est
+    
     cost_est = await estimator.estimate_cost(
-        model=original_model, 
+        model=body.get("model", original_model), # Could have changed due to downgrade 
         task_type="COMPLETION", 
         input_unit_count=input_tokens
     )
+
+
 
     # 🌊 WATERFALL BUDGETING (The Moat)
     # Verificamos casacada: Tenant -> Dept -> User
@@ -182,191 +217,116 @@ async def universal_proxy(
         headers = {"X-Cache": "HIT", "X-Cache-Latency": "0ms"}
         return JSONResponse(content=cached_response, headers=headers)
 
-    # D. "El Cambiazo" de Modelo (Model Swapping)
-    # Si el Dashboard dice "Usa gpt-3.5" aunque el código pida "gpt-4", obedecemos al Dashboard.
-    forced = config.get('force_model')
-    target_model = forced if forced else original_model
+    # D. Mapeo de Modelo a Tier (Enterprise Gateway Logic)
+    # ---------------------------------------------------
+    # Convertimos el modelo solicitado en un 'Nivel de Servicio'
+    target_tier = "agentshield-fast" # Default
+    if "gpt-4" in original_model or "claude-3-opus" in original_model or "smart" in original_model:
+        target_tier = "agentshield-smart"
     
-    # 4. ENRUTAMIENTO (Híbrido: Nube vs Local)
-    # Si config.upstream_url tiene valor (ej: http://localhost:11434), LiteLLM mandará ahí.
-    # Si es None, LiteLLM usará la API oficial de OpenAI/Anthropic.
-    api_base = config.get('upstream_url') 
-    
-    # --- 💰 HEDGE FUND STRATEGY: MODEL ARBITRAGE 💰 ---
-    # Si no hay forzado manual y el cliente activó "Smart Routing"
-    from app.services.arbitrage import get_best_provider
-    
-    # Asumimos que 'smart_routing_enabled' vendrá en config en el futuro. 
-    # Por ahora checkeamos si existe la key o si el usuario "quiere ganar siempre" enviando header 'X-Smart-Routing'
-    # o simplemente si config lo tiene (lo simularemos o confiaremos en que DB lo traerá)
-    is_smart_active = config.get('smart_routing_enabled', False)
-    
-    if not forced and is_smart_active:
-        try:
-            # Buscamos la mejor oferta en el mercado AHORA MISMO
-            best_option = await get_best_provider(
-                target_quality=target_model,
-                max_latency_ms=2000,
-                messages=clean_messages # Usamos mensajes LIMPIOS para análisis (Safe)
-            )
-            
-            if best_option:
-                new_model = best_option["model"]
-                logger.info(f"💰 Arbitrage Active: Swapping {target_model} -> {new_model} (Reason: {best_option.get('reason')})")
+    # Si hubo downgrade, ajustamos el tier
+    if body.get("model") != original_model:
+        # Simplificación: Downgrade suele ir a fast
+        target_tier = "agentshield-fast"
 
-                # --- METRICS FIX: REPORTAR AHORROS REALES ---
-                try:
-                    # Calculamos el coste del modelo original (lo que iba a gastar)
-                    original_cost_est = await estimator.estimate_cost(
-                        model=original_model, task_type="COMPLETION", input_unit_count=input_tokens
-                    )
-                    # Calculamos el coste del nuevo modelo (lo que va a gastar)
-                    new_cost_est = await estimator.estimate_cost(
-                        model=new_model, task_type="COMPLETION", input_unit_count=input_tokens
-                    )
+    # 4. ENRUTAMIENTO ENTERPRISE (Gateway + Caching + Hive)
+    # ----------------------------------------------
+    from app.services.llm_gateway import execute_with_resilience, ProviderError
+    from app.services.cache import check_cache, set_cache
+    from app.services.hive_memory import search_hive_mind, store_successful_interaction
+    from app.services.negotiator import negotiate_budget
 
-                    savings = original_cost_est - new_cost_est
-                    if savings > 0:
-                        # Incrementamos contador real en Redis
-                        await redis_client.incrbyfloat(f"stats:{tenant_id}:actual_savings", savings)
-                except Exception as metric_err:
-                    logger.warning(f"Failed to calculate savings metrics: {metric_err}")
-                # ---------------------------------------------
-
-                target_model = new_model
-                if best_option.get("api_base"):
-                    api_base = best_option["api_base"]
-            
-            else:
-                 # --- AÑADIR ESTE ELSE PARA EL FOMO (Pérdida de Oportunidad) ---
-                 # Si NO hubo arbitraje (best_option is None), calculamos cuánto perdimos por no usar el modelo más barato
-                try:
-                     # Asumimos que un modelo "barato" genérico cuesta un 50% menos
-                     # Esto es una heurística para "gamificar" el dashboard y mostrar "Missed Potential"
-                     potential_loss = cost_est * 0.5 
-                     # Solo registramos si el modelo actual es caro (ej. GPT-4)
-                     if "gpt-4" in target_model or "claude-3-opus" in target_model:
-                         await redis_client.incrbyfloat(f"stats:{tenant_id}:missed_savings", potential_loss)
-                         await redis_client.incrbyfloat(f"stats:{tenant_id}:missed_carbon", 0.5) # 0.5g CO2 aprox
-                except Exception as fomo_err:
-                    logger.warning(f"FOMO calculation failed: {fomo_err}")
-
-        except Exception as e:
-            logger.warning(f"Arbitrage/SmartRouting failed: {e}")
-             # Por ahora no lo contamos como missed_savings para no llenar de ruido.
-
-
-    # Obtener API Key del proveedor (Si es local, suele ser irrelevante, pero LiteLLM la pide)
-    # Si vamos a OpenAI real, sacamos la key de nuestro Vault.
-    api_key = None
-    if not api_base: 
-        # Es tráfico Cloud, necesitamos pagar nosotros
-        provider = target_model.split("/")[0] if "/" in target_model else "openai"
-        api_key = get_secret(f"LLM_KEY_{provider.upper()}")
-
-    # 5. EJECUCIÓN REAL (LiteLLM maneja la complejidad)
-    # 5. EJECUCIÓN REAL (LiteLLM maneja la complejidad)
-    # FIX: RESILIENCIA - Bucle de Reintentos (Fallback)
-    MAX_RETRIES = 2
-    response = None
-    
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            # Preparamos argumentos para LiteLLM
-            litellm_kwargs = {
-                "model": target_model,
-                "messages": clean_messages,
-                "stream": stream,
-                "api_key": api_key,
+    # 1. HIVE MIND (Corporate Memory) - Antes de Gateway
+    last_msg_content = next((m['content'] for m in reversed(messages) if m['role']=='user'), "")
+    if not stream and len(messages) < 10 and last_msg_content:
+        cached_solution = await search_hive_mind(str(tenant_id), last_msg_content)
+        if cached_solution:
+             logger.info(f"🧠 HIVE HIT for {identity.email}")
+             return {
+                "id": f"hive-{cached_solution['id']}",
+                "object": "chat.completion",
+                "model": "agentshield-hive-1.0",
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": f"💡 **Solución Corporativa (por {cached_solution.get('user_email')}):**\n\n{cached_solution['response']}"
+                    },
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
             }
-            if api_base:
-                litellm_kwargs["api_base"] = api_base # Redirección a Local/Privado
-            
-            start_ts = time.time()
-            response = await acompletion(**litellm_kwargs)
-            latency_ms = (time.time() - start_ts) * 1000
-            
-            # --- FIX: "INFLATED SELF-ESTEEM" (Real Quality Score) ---
-            # Si no es streaming, podemos evaluar la calidad real usando el Reranker (Self-Reflection)
-            # Si es streaming, es más difícil sin buffer, así que asumimos neutralidad o implementación futura.
-            if not stream and is_smart_active and 'best_option' in locals() and best_option.get("rl_state"):
-                 rl_state = best_option["rl_state"]
-                 responseText = response.choices[0].message.content
-                 
-                 # Lo lanzamos en background para no sumar latencia al usuario
-                 async def background_rl_update(st, mod, txt, lat):
-                     try:
-                         from app.services.reranker import get_reranker_model, rank
-                         # Evaluamos: ¿Qué tan relevante es la respuesta para el último prompt?
-                         # Usamos el último mensaje del usuario como query
-                         last_user_msg = next((m['content'] for m in reversed(clean_messages) if m['role']=='user'), "")
-                         
-                         score = 1.0 # Default optimism
-                         if last_user_msg:
-                            # Rank devuelve lista, tomamos score del primero (unico)
-                            # Nota: rank() puede ser sync o async wrapper. Asumimos sync wrapper o to_thread.
-                            # Para seguridad, corremos en threadpool
-                            ranking = await asyncio.to_thread(rank, last_user_msg, [txt])
-                            if ranking:
-                                score = ranking[0]['score'] # 0.0 a 1.0
-                         
-                         # Calculamos recompensa REAL
-                         from app.services.arbitrage import arbitrage_engine
-                         # Asumimos que "ahorro" es parte del reward, pero aquí actualizamos con calidad.
-                         # Ojo: calculate_reward necesita 'cost_saved'. Lo re-calculamos o estimamos.
-                         # Simplificación: Reward = (Calidad * Penalización Latencia)
-                         # Ignoramos coste aquí porque ya fue factorizado parcialmente, o asumimos que
-                         # el "coste bajo" ya era parte de la elección. 
-                         # Lo ideal es recalcular todo el reward.
-                         
-                         # Re-estimamos coste (si podemos) o usamos un proxy
-                         # Reward = Score(0-1) - LatencyPenalty
-                         
-                         final_reward = arbitrage_engine.calculate_reward(
-                             cost_saved=0.1, # Dummy positivo pequeño (el ahorro ya está hecho)
-                             rerank_score=score,
-                             latency_ms=lat,
-                             user_satisfaction=1.0 # Aun no tenemos feedback explicito, pero Rerank es el proxy
-                         )
-                         
-                         await arbitrage_engine.update_learning(st, mod, final_reward)
-                         logger.info(f"🧠 Self-Reflection: Score={score:.2f}, Latency={lat:.0f}ms -> Reward={final_reward:.2f}")
-                     except Exception as e:
-                         logger.warning(f"Background RL Update failed: {e}")
 
-                 # Fire and forget
-                 asyncio.create_task(background_rl_update(rl_state, target_model, responseText, latency_ms))
-            # ----------------------------------------------------
-
-            break # Éxito, salimos del bucle
+    # A. SELECTIVE CACHING (Capa 2: Caché Semántico/Exacto Short Term)
+    should_cache = not stream and len(messages) < 20 
     
-        except Exception as e:
-            logger.error(f"❌ AI Provider Error (Attempt {attempt}/{MAX_RETRIES}): {e}")
-            
-            # --- FIX: PENALIZAR AL MODELO SI FALLA ---
-            # Si el arbitraje eligió este modelo y falló, debe aprender la lección.
-            if is_smart_active and 'best_option' in locals() and best_option:
-                rl_state = best_option.get("rl_state")
-                if rl_state:
-                    from app.services.arbitrage import arbitrage_engine
-                    # Recompensa muy negativa (-10) para que aprenda a evitar esto
-                    asyncio.create_task(
-                        arbitrage_engine.update_learning(
-                            state=rl_state,
-                            action_model=target_model,
-                            reward=-10.0 
-                        )
-                    )
-            # -----------------------------------------
-            
-            if attempt == MAX_RETRIES:
-                # Si fallamos la última vez, explotamos
-                raise HTTPException(502, f"Upstream AI Error after {MAX_RETRIES} attempts: {str(e)}")
-            
-            # Si fallamos pero quedan intentos, podríamos cambiar de modelo aquí
-            # Por ahora, reintentamos (backoff)
-            await asyncio.sleep(0.5 * attempt)
+    if should_cache:
+        cached_response = await check_cache(messages, target_tier, str(tenant_id))
+        if cached_response:
+            logger.info(f"⚡ CACHE HIT for {identity.email} on {target_tier}")
+            headers = {"X-Cache": "HIT", "X-Cache-Latency": "0ms"}
+            return JSONResponse(content=cached_response, headers=headers)
 
+    # 🌊 WATERFALL BUDGETING & NEGOTIATOR
+    # Verificamos casacada: Tenant -> Dept -> User
+    can_afford, reason = await check_hierarchical_budget(identity, cost_est)
+    
+    if not can_afford:
+        # --- FASE DE NEGOCIACIÓN (AI CFO) ---
+        logger.info(f"💰 Budget Empty. Initiating Negotiation for {identity.email}")
+        
+        # Solo negociamos si es una tarea razonable, no si está bloqueado por política
+        is_granted, judge_reason = await negotiate_budget(last_msg_content, target_tier, 0)
+        
+        if is_granted:
+             logger.info(f"✅ AI CFO approved emergency overdraft: {judge_reason}")
+             # Proceed (we assume 'can_afford' is overridden effectively)
+             # Note: logic flows to Gateway. We might want to flag this transaction as 'overdraft' in metadata later.
+        else:
+            logger.warning(f"⛔ Governance Block: {reason} & Negotiation Denied: {judge_reason}")
+            raise HTTPException(status_code=402, detail=f"Budget Exceeded. Emergency Request Denied: {judge_reason}")
+
+    # B. EXECUTION WITH RESILIENCE (El nuevo Gateway)
+    try:
+        response = await execute_with_resilience(
+            tier=target_tier, 
+            messages=messages, 
+            user_id=identity.user_id
+        )
+        target_model = response.get("model", target_tier) 
+        
+    except ProviderError as e:
+        logger.critical(f"🔥 TOTAL OUTAGE for {identity.email}: {e}")
+        raise HTTPException(status_code=503, detail="Service currently unavailable due to upstream provider outage.")
+    except Exception as e:
+        logger.error(f"Gateway unhandled error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # C. SAVE TO CACHE & HIVE (Asíncrono)
+    if should_cache:
+        background_tasks.add_task(set_cache, messages, target_tier, str(tenant_id), response)
+        
+    # Guardar en Hive si fue útil? (Heurística: Long responses are usually solutions)
+    # En un sistema real, el usuario daría thumbs up. Aquí guardamos todo para poblar la DB inicial.
+    if last_msg_content and not stream:
+        resp_content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+        if len(resp_content) > 50: # Solo respuestas sustanciales
+             background_tasks.add_task(
+                store_successful_interaction, 
+                str(tenant_id), 
+                identity.email, 
+                last_msg_content, 
+                resp_content
+            )
+
+    # 5. POST-PROCESO (Unificado)
+    # ---------------------------
+    # El gateway devuelve dict (o similar). Lo pasamos a response object si es necesario?
+    # Agentshield logic downstream expects 'response' object from litellm or dict.
+    # Our gateway returns what litellm returns (ModelResponse) OR a dict depending on my implementation in llm_gateway.
+    # I implemented `_call_provider` returning `acompletion` result which is ModelResponse.
+    # So `response` is valid ModelResponse.
+    
     # 6. REGISTRAR RESULTADOS (Observabilidad & Cobro)
     
     async def post_process(response_obj, is_stream=False):

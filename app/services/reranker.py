@@ -64,3 +64,23 @@ async def verify_cache_logic(query: str, cached_query: str) -> tuple[bool, float
         logger.error(f"⚠️ Reranker Error: {e}")
         # Fail-safe: Si falla el reranker, asumimos que NO es match para evitar devolver basura.
         return False, 0.0
+
+from litellm import embedding as litellm_embedding
+
+async def get_embedding(text: str) -> list[float]:
+    """
+    Genera embedding vector (1536 dim) usando OpenAI/Azure via LiteLLM.
+    """
+    try:
+        # Usamos text-embedding-3-small por ser SOTA en coste/performance
+        # Asegurate de tener OPENAI_API_KEY o similar en env.
+        response = await asyncio.to_thread(
+            litellm_embedding,
+            model="text-embedding-3-small",
+            input=[text]
+        )
+        return response['data'][0]['embedding']
+    except Exception as e:
+        logger.error(f"Embedding failed: {e}")
+        return []
+

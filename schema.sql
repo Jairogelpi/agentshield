@@ -102,3 +102,87 @@ CREATE POLICY "Tenants view own receipts" ON receipts
 
 -- Only System Service (Service Role) can update balances directly
 -- (Or implemented via Database Functions / Stored Procedures)
+
+-- 6. DYNAMIC POLICIES (Shadow Mode Engine)
+CREATE TABLE IF NOT EXISTS policies (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id),
+    name TEXT NOT NULL,         -- Ej: 'Bloquear Código Fuera de IT'
+    description TEXT,
+    
+    -- La Lógica (Declarativa)
+    target_dept TEXT,           -- 'Marketing', '*'
+    target_role TEXT,           -- 'intern', '*'
+    condition_json JSONB,       -- { 'intent': 'coding', 'cost_gt': 5 }
+    
+    -- La Acción
+    action TEXT NOT NULL,       -- 'BLOCK', 'REDACT', 'DOWNGRADE', 'FLAG'
+    
+    -- EL INTERRUPTOR MÁGICO
+    mode TEXT DEFAULT 'SHADOW', -- 'ENFORCE' (Activo) o 'SHADOW' (Silencioso)
+    
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_policies_tenant ON policies(tenant_id);
+
+-- ==============================================================================
+-- 7. THE NEURAL HIVE (Corporate Vector Memory)
+-- ==============================================================================
+
+-- Habilita la extensión vectorial (si Supabase la tiene disponible)
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE IF NOT EXISTS hive_memory (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id),
+    user_email TEXT, -- El 'Autor' de la solución (para Royalties/Badge)
+    
+    prompt TEXT NOT NULL,
+    response TEXT NOT NULL,
+    
+    -- Embeddings (OpenAI text-embedding-3-small = 1536 dim)
+    embedding vector(1536),
+    
+    upvotes INT DEFAULT 1,
+    verified_by_human BOOLEAN DEFAULT FALSE,
+    
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    
+    -- Metadata adicional (modelo usado, coste ahorrado, etc)
+    metadata JSONB DEFAULT '{}'::JSONB
+);
+
+-- Index for IVFFlat (Approximate Nearest Neighbor) - Opcional para performance
+-- CREATE INDEX ON hive_memory USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+
+-- Busqueda Semantica (RPC para llamarla desde Python)
+CREATE OR REPLACE FUNCTION match_hive_interactions (
+  query_embedding vector(1536),
+  match_threshold float,
+  match_count int,
+  filter_tenant uuid
+)
+RETURNS TABLE (
+  id uuid,
+  response text,
+  user_email text,
+  similarity float
+)
+LANGUAGE plpgsql
+AS c:\Users\jairo\Desktop\agentshield
+BEGIN
+  RETURN QUERY
+  SELECT
+    hive_memory.id,
+    hive_memory.response,
+    hive_memory.user_email,
+    1 - (hive_memory.embedding <=> query_embedding) AS similarity
+  FROM hive_memory
+  WHERE 1 - (hive_memory.embedding <=> query_embedding) > match_threshold
+  AND hive_memory.tenant_id = filter_tenant
+  ORDER BY hive_memory.embedding <=> query_embedding
+  LIMIT match_count;
+END;
+c:\Users\jairo\Desktop\agentshield;
