@@ -18,7 +18,27 @@ PRIVATE_KEY_PATH = os.path.join(CERT_DIR, "private_key.pem")
 PUBLIC_KEY_PATH = os.path.join(CERT_DIR, "public_key.pem")
 
 def load_private_key():
-    """Carga la clave privada del servidor para firmar recibos."""
+    """
+    Carga la clave privada del servidor.
+    Prioridad:
+    1. Variable de Entorno (Producción/Render)
+    2. Archivo Local (Desarrollo)
+    """
+    # 1. Intentar cargar desde ENV (Para Render/Vercel)
+    env_key = os.getenv("PRIVATE_KEY_PEM")
+    if env_key:
+        try:
+             # Si viene como string en una línea (sin saltos), hay que formatearlo o asumirlo válido
+             # Normalmente en Render se puede pegar el contenido multilínea.
+             # Convertimos a bytes
+             key_bytes = env_key.encode('utf-8')
+             logger.info("✅ Loaded Private Key from Environment")
+             return serialization.load_pem_private_key(key_bytes, password=None)
+        except Exception as e:
+             logger.error(f"❌ Failed to load key from ENV: {e}")
+             # Fallback to local file
+
+    # 2. Fallback: Archivo Local (Desarrollo)
     if not os.path.exists(PRIVATE_KEY_PATH):
         logger.info("🔑 Generating new RSA 2048 Keypair for Digital Notary...")
         # Generar una si no existe (Solo para setup inicial)
