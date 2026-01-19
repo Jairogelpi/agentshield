@@ -1,51 +1,89 @@
 # 06. Estrategia Frontend: AgentShield OS (Dual Interface)
 
-Para el usuario final, AgentShield no es una API, es un producto unificado. Nuestra estrategia de frontend es dual: separamos la experiencia de "Consumo" (Chat) de la experiencia de "Control" (Dashboard), pero las conectamos fluida.
+> **Estado**: En Construcción Activa
+> **Versión**: 1.1 (Technical Blueprint)
+
+Para el usuario final, AgentShield no es solo una API, es un sistema operativo empresarial ("OS"). Nuestra estrategia de frontend es dual: separamos la experiencia de "Consumo" (Chat) de la experiencia de "Control" (Dashboard), conectándolas mediante una identidad federada.
 
 ## 1. La Cara del Empleado: "El Chat Inteligente" (OpenWebUI)
-**Objetivo**: Eliminar fricción. Que parezca ChatGPT, pero seguro.
+**Objetivo**: Eliminar fricción. Que parezca ChatGPT, pero con esteroides de seguridad.
 
-Esta interfaz es una instancia personalizada de **OpenWebUI** que consume nuestra API.
+Esta interfaz consume la API de AgentShield como si fuera OpenAI, pero recibe valor añadido en cada respuesta.
 
-### Características Clave (Configuración)
--   **Sin Configuración de Usuario**: El empleado entra con SSO. No gestiona API Keys. Nuestra API inyecta su identidad (Identity Envelope) invisiblemente.
--   **Alias de Modelos**: El usuario no ve "gpt-4-turbo" o "claude-3-opus". Ve alias comerciales definidos por la empresa:
-    -   `AgentShield Auto` (Arbitraje automático)
-    -   `AgentShield Eco` (Modelos baratos/locales)
-    -   `AgentShield Secure` (Modelos sin retención de datos)
--   **HUD en Tiempo Real**: Al final de cada respuesta, el proxy inyecta metadatos educativos:
-    -   Trust Score
-    -   Dinero Ahorrado
-    -   Huella de CO2
+### Implementación Técnica
+-   **Endpoint**: `https://api.tuempresa.com/v1/chat/completions` (AgentShield Proxy).
+-   **Identidad**: SSO inyecta `Identity Envelope` (JWT). No hay gestión de API Keys.
+-   **Modelos Virtuales**:
+    -   `AgentShield Auto`: Router inteligente que decide entre modelos según complejidad.
+    -   `AgentShield Secure`: Garantiza PII stripping y borrado de registros.
+-   **In-Chat HUD**: El proxy añade metadatos al final del stream de texto: `[🛡️ Trust Score: 98 | 🌱 Save: 0.4g CO2 | 💰 Ahorro: $0.02]`
+
+---
 
 ## 2. La Cara del Admin/Jefe: "El Tablero de Control" (Next.js Dashboard)
-**Objetivo**: Evidencia, Auditoría y Finanzas.
+**Objetivo**: Evidencia, Auditoría y Finanzas. Convertir lo intangible (seguridad) en tangible (gráficos y reportes).
 
-Este es el desarrollo propietario (carpeta `agentshield_frontend`). Es donde se visualiza el valor que genera la plataforma.
+Ubicación: `agentshield_frontend/src/app/(dashboard)`
 
 ### A. Visualización Financiera ("Money View")
 **Componente**: `src/components/charts/spending-chart.tsx`
--   Muestra gráficos en tiempo real del consumo.
--   **Diferenciador**: Resalta el "Gasto Evitado" (Ahorro) vs el "Gasto Real", demostrando el ROI del sistema de arbitraje.
+**Estado**: 🏗️ En Diseño
+
+#### Estrategia
+Mostrar no solo cuánto se gasta, sino cuánto **se ha dejado de gastar** gracias al arbitraje de IA.
+-   **Query**: Endpoint `/v1/analytics/spending` (Pendiente).
+-   **Métricas**:
+    -   `Gasto Real`: Lo que AgentShield pagó a OpenAI/Anthropic.
+    -   `Coste Estimado`: Lo que hubiera costado si se usara siempre GPT-4.
+    -   `ROI`: (Coste Estimado - Gasto Real).
 
 ### B. Auditoría Forense ("Legal View")
 **Ruta**: `src/app/(dashboard)/dashboard/receipts/page.tsx`
--   Explorador de "Recibos Forenses".
--   Permite a los auditores (CFO/Legal) inspeccionar cada transacción.
--   **Verificación**: Botón para validar la firma criptográfica (RSA) y la integridad de la cadena de hashes contra la clave pública.
+**Estado**: ✅ Implementado (Fase 4)
+
+#### Estrategia
+Proveer prueba matemática de inocencia y cumplimiento ("Digital Notary").
+
+#### Detalles de Implementación
+1.  **Backend**: `GET /v1/audit/public-key` expone la clave pública RSA (PEM).
+2.  **Frontend**:
+    -   Botón "Verify" en cada fila de tabla.
+    -   **`VerificationModal`**:
+        -   Calcula SHA-256 del contenido del recibo (Client-side o simulación).
+        -   Muestra el Hash encadenado (`previous_hash`).
+        -   Verifica visualmente la firma RSA con la clave pública.
+    -   Indicadores de estado: `Verifying...` -> `Signature Valid` (Verde) / `Corrupted` (Rojo).
 
 ### C. Economía de Conocimiento ("Futuristic View")
 **Componente**: `src/components/3d/market-scene.tsx`
--   Visualización 3D (Three.js/Fiber) del flujo de datos en tiempo real.
--   Representa cómo los diferentes departamentos "comercian" con conocimiento (Royalties), haciendo tangible la economía interna de datos.
+**Estado**: 🏗️ Concepto
+
+#### Estrategia
+Hacer visible el flujo de datos invisible. Usar gráficos 3D (Three.js/React Three Fiber) para mostrar transacciones volando entre nodos (Departamentos).
+-   **Visual**: Nodos brillantes que representan Depts (HR, Tech, Sales).
+-   **Partículas**: Cada token generado es una partícula que viaja.
+-   **Royalties**: Cuando Marketing usa un prompt de Ventas, se visualiza una transferencia de créditos.
 
 ### D. Sostenibilidad ("ESG View")
 **Ruta**: `src/app/(dashboard)/dashboard/sustainability/page.tsx`
--   Panel de impacto ambiental.
--   Visualiza los gramos de CO2 ahorrados gracias al uso de modelos optimizados (menor cómputo) o energía verde, alimentado por el backend (`carbon.py`).
+**Estado**: 🟡 Conectado a Backend
 
-## Flujo de Usuario Unificado
-1.  Empleado usa el Chat (OpenWebUI) -> Genera logs y recibos.
-2.  Empleado ve botón "📊 Mi Panel de Impacto".
-3.  Clic redirige al Dashboard (Next.js) con SSO.
-4.  Empleado ve sus propios recibos firmados y su contribución al ahorro de la empresa.
+#### Estrategia
+Convertir la eficiencia computacional en métricas ESG (Environmental, Social, Governance).
+
+#### Detalles de Implementación
+-   **Backend**: `GET /v1/analytics/sustainability`
+    -   Usa RPC `get_total_carbon` en Supabase para suma atómica rápida.
+    -   Constantes: 1 Árbol = 57g CO2 absorción/día.
+-   **Frontend**:
+    -   Muestra "Árboles Plantados" (Equivalencia).
+    -   Rating Energético (A+ para servidores EU, B para US).
+    -   Botón "Download Certificate" para cumplimiento de normativa (EU AI Act).
+
+---
+
+## Roadmap de Integración
+1.  **Auditoría (Receipts)**: ✅ Completado. Firma RSA verificable en UI.
+2.  **Sostenibilidad**: Siguiente paso. Conectar `page.tsx` con endpoint real `v1/analytics/sustainability`.
+3.  **Finanzas**: Implementar endpoint de series temporales para `spending-chart`.
+4.  **3D Market**: Implementación final (Wow Factor).
