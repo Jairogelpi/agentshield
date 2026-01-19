@@ -1,6 +1,6 @@
 # app/routers/embeddings.py
-from fastapi import APIRouter, Request, HTTPException, Depends, BackgroundTasks
-from app.services.identity import verify_identity_envelope
+from fastapi import APIRouter, Request, HTTPException, Depends, BackgroundTasks, UploadFile
+from app.services.identity import verify_identity_envelope, VerifiedIdentity
 from app.schema import AgentShieldContext
 from litellm import embedding
 import time
@@ -11,8 +11,8 @@ logger = logging.getLogger("agentshield.embeddings")
 
 router = APIRouter()
 
-# Placeholder para billing (podemos importarlo si existe o usar lógica ad-hoc)
-# from app.services import billing
+# Import the vault service for file ingestion
+from app.services.vault import vault
 
 @router.post("/v1/embeddings")
 async def proxy_embeddings(
@@ -32,9 +32,7 @@ async def proxy_embeddings(
         if not input_text:
             raise HTTPException(status_code=400, detail="Missing input text")
 
-        # 1. Validación de Presupuesto (¿Puede este usuario vectorizar 10MB?)
-        # Estimar tokens (aprox 1 token = 4 chars de media en inglés, varía)
-        # Input puede ser str o list[str]
+        # 1. Validación de Presupuesto
         char_count = 0
         if isinstance(input_text, str):
             char_count = len(input_text)
@@ -43,16 +41,9 @@ async def proxy_embeddings(
             
         est_tokens = char_count / 4
         
-        # TODO: Lógica de limiter.check_budget(ctx, est_tokens) iría aquí...
-        # Por ahora solo logueamos la intención
         logger.info(f"🧠 RAG Request from {ctx.email}: ~{est_tokens:.0f} tokens via {model}")
 
         # 2. Ejecución (Usando LiteLLM)
-        # embedding() is sync in litellm usually, wrapping might be needed if blocking.
-        # But litellm might handle async with separate function `aembedding`.
-        # Assuming sync for simplicity or wrap in run_in_executor if needed.
-        # To be safe with async server, let's use aembedding if available or assume fast response.
-        
         from litellm import aembedding
         start = time.time()
         response = await aembedding(model=model, input=input_text)
@@ -62,18 +53,40 @@ async def proxy_embeddings(
         usage = response.usage
         total_tokens = usage.total_tokens
         
-        # Calcular coste real (Embeddings son baratos, pero el volumen es alto)
-        # USD prices: text-embedding-3-small ~ $0.00002 / 1k tokens
         cost = (total_tokens / 1000) * 0.00002 
         
         logger.info(f"✅ Embeddings generated: {total_tokens} toks (${cost:.6f}) in {duration:.2f}s")
-        
-        # Registrar el gasto igual que un chat (Mock)
-        # background_tasks.add_task(billing.charge, ctx, cost)
         
         # Devolvemos formato OpenAI standard
         return response
 
     except Exception as e:
         logger.error(f"Embedding failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/v1/files")
+async def upload_file(
+    file: UploadFile,
+    # Use VerifiedIdentity explicitly for consistency with vault service type hinting
+    identity: VerifiedIdentity = Depends(verify_identity_envelope)
+):
+    """
+    Ingesta segura de archivos PDF/TXT desde la UI (AgentShield Vault).
+    """
+    try:
+        content = await file.read()
+        # Simple decode, for PDFs use pypdf or similar in real impl
+        # Assuming text files for this MVP step
+        text = content.decode("utf-8", errors="ignore") 
+        
+        doc_id = await vault.ingest_document(
+            identity=identity,
+            filename=file.filename,
+            text_content=text,
+            classification="INTERNAL" # Default
+        )
+        
+        return {"id": str(doc_id), "status": "securely_indexed", "filename": file.filename}
+    except Exception as e:
+        logger.error(f"File upload failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
