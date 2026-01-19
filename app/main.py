@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.responses import ORJSONResponse, JSONResponse
 from app.routers import authorize, receipt, dashboard, proxy, onboarding, compliance, analytics
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,6 +9,25 @@ from slowapi.errors import RateLimitExceeded
 from app.limiter import limiter
 from app.services.cache import init_semantic_cache_index
 from app.services.market_oracle import update_market_rules
+from app.logic import verify_api_key
+
+# 1. Función de Guardián Global
+async def global_security_guard(request: Request):
+    # Lista blanca de endpoints backend que NO requieren auth
+    # /health: Necesario para Render/K8s
+    # /docs y /openapi.json: Para que tú veas la docu (puedes quitarlo en prod)
+    # /v1/webhook: Webhooks de terceros (ej. Stripe/Brevo) que no envían Bearer
+    whitelist = ["/health", "/docs", "/openapi.json", "/v1/webhook"]
+    
+    if request.url.path in whitelist:
+        return # Pase usted
+        
+    if request.method == "OPTIONS":
+        return # CORS preflight pase usted
+
+    # Para todo lo demás: EXIGIR CREDENCIALES
+    # Esto lanzará 401 si no hay token válido.
+    await verify_api_key(request.headers.get("Authorization"))
 
 import os
 import logging
@@ -160,7 +179,8 @@ app = FastAPI(
     title="AgentShield API", 
     version="1.0.0", 
     lifespan=lifespan,
-    default_response_class=ORJSONResponse
+    default_response_class=ORJSONResponse,
+    dependencies=[Depends(global_security_guard)] # <--- AQUÍ ESTÁ EL CANDADO MAESTRO
 )
 
 # 5. PROTOCOLO ESPEJO: Sincronización Universal de Precios al Inicio
@@ -236,6 +256,7 @@ app.add_middleware(
 app.add_middleware(
     TrustedHostMiddleware, 
     allowed_hosts=[
+        "api.getagentshield.com",   # ✅ API Subdomain
         "getagentshield.com",       # ✅ Tu dominio real
         "www.getagentshield.com",   # ✅ Tu subdominio
         "localhost",                # ✅ Desarrollo

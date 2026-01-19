@@ -50,7 +50,15 @@ async def verify_api_key(auth_header: str) -> str:
             payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
             # Validar expiración y emisor es automático por jose si se configura, 
             # pero aquí confiamos en la firma.
-            return payload.get("tenant_id")
+            app_metadata = payload.get("app_metadata", {})
+            tenant_id = app_metadata.get("tenant_id")
+            
+            if not tenant_id:
+                 # Fallback: si no hay tenant_id, usamos el 'sub' (User ID)
+                 # Esto ocurre antes de que el Trigger corra o si es un token viejo
+                 return payload.get("sub")
+                 
+            return tenant_id
         except JWTError:
             raise HTTPException(401, "Invalid or Expired JWT")
 
