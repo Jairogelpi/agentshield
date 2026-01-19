@@ -380,21 +380,32 @@ async def universal_proxy(
 
         # ⚖️ DIGITAL NOTARY (FORENSIC RECEIPT)
         # Generamos evidencia firmada y encadenada
+        
+        # Policy Proof Construction (Real Data)
+        policy_proof = {
+            "applied_rule": policy_result.violation_msg or "DEFAULT_ALLOW_POLICY",
+            "decision": policy_result.action,
+            "reason": f"Evaluation Result: {policy_result.action}. Shadow hits: {len(policy_result.shadow_hits)}",
+            "remediation": "Review policy configuration" if policy_result.action == "BLOCK" else "None required"
+        }
+
         tx_data = {
             "model_requested": original_model,
             "model_delivered": target_model, 
             "cost_usd": real_cost,
             "tokens": {"input": input_tokens, "output": output_tokens},
-            "decision": "ALLOW", # O "REDACT" si pii_guard actuó (TODO: Pass actual PII decision)
-            "redactions_count": 0 # TODO: Pass actual redaction count
+            "decision": policy_result.action, # "ALLOW" | "DOWNGRADE"
+            "policy_proof": policy_proof, # <--- The "Policy-Proof" Evidence
+            "redactions_count": 0 # TODO: Pass actual redaction count from PII Guard
         }
         
-        # Snapshot de la política actual (Simulada para este MVP)
+        # Snapshot de la política actual para probar qué reglas estaban activas
+        # En un sistema real full, serializaríamos las políticas cacheadas.
+        # Aquí guardamos un resumen hashable.
         policy_snapshot = {
-            "allow_gpt4": True,
-            "pii_strict_mode": True,
-            "budget_cap_enabled": True,
-            "timestamp": time.time()
+            "timestamp": time.time(),
+            "active_mode": "ENFORCE",
+            "shadow_hits_count": len(policy_result.shadow_hits)
         }
 
         # Fire and forget: No bloqueamos la respuesta al cliente
