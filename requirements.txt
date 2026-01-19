@@ -16,7 +16,7 @@ opentelemetry-instrumentation-fastapi
 logtail-python
 Pillow
 piexif
-cryptography
+cryptography>=41.0.0
 langdetect
 sentry_sdk
 redis==4.6.0

@@ -17,6 +17,7 @@ from app.utils import fast_json as json
 # --- IMPORTAMOS LA NUEVA LÓGICA DE VERIFICACIÓN ---
 from app.services.identity import verify_identity_envelope, VerifiedIdentity
 from app.services.limiter import check_hierarchical_budget, charge_hierarchical_wallets
+from app.services.receipt_manager import create_forensic_receipt
 
 @router.post("/v1/chat/completions")
 async def universal_proxy(
@@ -416,6 +417,35 @@ async def universal_proxy(
         # 🌊 WATERFALL CHARGE (Atomic Decrement)
         # Esto descuenta el dinero de los 3 niveles REALES en Redis
         asyncio.create_task(charge_hierarchical_wallets(identity, real_cost))
+
+        # ⚖️ DIGITAL NOTARY (FORENSIC RECEIPT)
+        # Generamos evidencia firmada y encadenada
+        tx_data = {
+            "model_requested": original_model,
+            "model_delivered": target_model, 
+            "cost_usd": real_cost,
+            "tokens": {"input": input_tokens, "output": output_tokens},
+            "decision": "ALLOW", # O "REDACT" si pii_guard actuó (TODO: Pass actual PII decision)
+            "redactions_count": 0 # TODO: Pass actual redaction count
+        }
+        
+        # Snapshot de la política actual (Simulada para este MVP)
+        policy_snapshot = {
+            "allow_gpt4": True,
+            "pii_strict_mode": True,
+            "budget_cap_enabled": True,
+            "timestamp": time.time()
+        }
+
+        # Fire and forget: No bloqueamos la respuesta al cliente
+        asyncio.create_task(
+            create_forensic_receipt(
+                tenant_id=tenant_id,
+                user_email=identity.email,
+                transaction_data=tx_data,
+                policy_snapshot=policy_snapshot
+            )
+        )
 
         await record_transaction(
             tenant_id=tenant_id, 

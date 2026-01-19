@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS wallets (
 -- Index for fast lookup during the "Waterfall Check"
 CREATE INDEX idx_wallets_lookup ON wallets(tenant_id, department_id, user_id);
 
--- 2. WALLET TRANSACTIONS (AUDIT TRAIL)
+-- 2. WALLET TRANSACTIONS (AUDIT TRAIL / LEDGER)
 -- Immutable ledger of every credit/debit.
 CREATE TABLE IF NOT EXISTS wallet_transactions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -46,7 +46,28 @@ CREATE TABLE IF NOT EXISTS wallet_transactions (
 
 CREATE INDEX idx_wallet_tx_wallet_id ON wallet_transactions(wallet_id);
 
--- 3. TRIGGERS
+-- 3. DIGITAL NOTARY (FORENSIC RECEIPTS)
+-- Criptografía Asimétrica + Encadenamiento de Hashes
+CREATE TABLE IF NOT EXISTS receipts (
+    id UUID PRIMARY KEY, -- Generado en Python
+    tenant_id UUID NOT NULL REFERENCES tenants(id),
+    
+    -- El contenido inmutable (Evidence Payload)
+    content_json JSONB NOT NULL,
+    
+    -- La Criptografía
+    signature TEXT NOT NULL, -- Firma RSA Base64
+    hash TEXT NOT NULL,      -- Hash SHA256 de este registro (Current Hash)
+    
+    -- Metadatos para búsquedas
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Índice para verificar la cadena rápidamente (Chain Continuity Check)
+CREATE INDEX idx_receipts_chain ON receipts(tenant_id, created_at DESC);
+
+
+-- 4. TRIGGERS
 -- Automatically update 'updated_at'
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
@@ -61,14 +82,22 @@ CREATE TRIGGER update_wallets_modtime
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
--- 4. RLS POLICIES (Example for Supabase)
+-- 5. RLS POLICIES (Example for Supabase)
 ALTER TABLE wallets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE receipts ENABLE ROW LEVEL SECURITY;
 
 -- Tenants can view their own hierarchy wallets
 CREATE POLICY "Tenants view own wallets" ON wallets
     FOR SELECT
     USING (auth.uid() = user_id OR EXISTS (
         SELECT 1 FROM tenants WHERE id = wallets.tenant_id AND owner_id = auth.uid()
+    ));
+
+-- Tenants can view their own receipts (Evidence)
+CREATE POLICY "Tenants view own receipts" ON receipts
+    FOR SELECT
+    USING (EXISTS (
+        SELECT 1 FROM tenants WHERE id = receipts.tenant_id AND owner_id = auth.uid()
     ));
 
 -- Only System Service (Service Role) can update balances directly
