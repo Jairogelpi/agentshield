@@ -82,8 +82,9 @@ Un empleado de Marketing sube "Nóminas_2025.pdf" para resumirlas con IA.
 Interceptamos el flujo en `POST /v1/files` antes de indexar nada.
 
 1.  **Detección de Intención**: Analizamos el archivo (Nombre, tipo, contenido inicial).
-2.  **Motor de Políticas Unified**: Reutilizamos la tabla `policies` con `action='BLOCK_UPLOAD'`.
+2.  **Anti-DoS (Size Limit)**: Bloqueo inmediato de archivos >10MB para evitar saturación de RAM en el contenedor (evita ataques de disponibilidad).
+3.  **Motor de Políticas Unified**: Reutilizamos la tabla `policies` con `action='BLOCK_UPLOAD'`.
     *   Ejemplo: `{"block_categories": ["INVOICE", "PAYSLIP"]}`
-3.  **Auditoría**: Cada bloqueo se registra en `policy_events` junto con los bloqueos de prompts, unificando la visión de seguridad.
+4.  **Auditoría**: Cada bloqueo se registra en `policy_events` junto con los bloqueos de prompts, unificando la visión de seguridad.
 
 **Resultado**: "Marketing" nunca podrá subir archivos financieros, aunque la UI lo permita. El bloqueo es a nivel de API/Infraestructura.

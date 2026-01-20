@@ -21,6 +21,19 @@ class FileGuardian:
             
         filename = file.filename
         
+        # 0. DoS Protection: Size Limit (10MB)
+        # Prevents RAM exhaustion from giant PDFs
+        MAX_SIZE = 10 * 1024 * 1024
+        
+        # Check size safely
+        file.file.seek(0, 2) # Go to end
+        size = file.file.tell() # Get size
+        file.file.seek(0) # Reset to start
+        
+        if size > MAX_SIZE:
+             logger.warning(f"File {filename} blocked due to size {size} > {MAX_SIZE}")
+             raise HTTPException(413, f"File too large. Maximum allowed size is {MAX_SIZE/1024/1024}MB.")
+
         # 1. Detección Semántica (Simulada/Mock)
         # En producción, esto usaría OCR o clasificación de texto
         content_category = self._mock_classify_content(filename) 
