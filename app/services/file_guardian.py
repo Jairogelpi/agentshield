@@ -20,7 +20,9 @@ logger = logging.getLogger("agentshield.file_guardian")
 
 class FileGuardian:
     """
-    🛡️ Smart Semantic Guardian: Regex + Zero-Shot Classification Local.
+    🛡️ Universal Semantic Guardian.
+    Zero-Shot Classification Local para CUALQUIER categoría definida por el usuario.
+    Sin Regex hardcodeados. Universal y Dinámico.
     """
     
     def __init__(self):
@@ -29,7 +31,7 @@ class FileGuardian:
         
         if AI_AVAILABLE:
             try:
-                logger.info("🧠 Initializing Local Semantic Guardian (ONNX)...")
+                logger.info("🧠 Initializing Universal Semantic Guardian (ONNX)...")
                 # Load optimized small model for zero-shot
                 self.classifier = pipeline(
                     "zero-shot-classification",
@@ -37,22 +39,14 @@ class FileGuardian:
                     device=-1 # CPU
                 )
                 self.ai_enabled = True
-                logger.info("✅ Semantic Guardian Ready.")
+                logger.info("✅ Universal Semantic Guardian Ready.")
             except Exception as e:
-                logger.warning(f"⚠️ Failed to load AI model: {e}. Falling back to Regex-Only.")
+                logger.warning(f"⚠️ Failed to load AI model: {e}. Falling back to Keyword Matching.")
                 self.ai_enabled = False
-        
-        # Mapping: Policy Category -> Regex Patterns
-        self.category_patterns = {
-            "INVOICE": [r"(?i)factura", r"(?i)invoice", r"(?i)iban", r"(?i)swift", r"(?i)total\s*a\s*pagar"],
-            "PAYSLIP": [r"(?i)nómina", r"(?i)salario", r"(?i)payslip", r"(?i)sueldo"],
-            "FINANCIAL_REPORT": [r"(?i)balance", r"(?i)p&l", r"(?i)ganancias", r"(?i)ebitda"],
-            "DNI": [r"(?i)dni", r"(?i)passport", r"(?i)pasaporte", r"(?i)nif"]
-        }
 
     async def inspect_and_filter(self, file: UploadFile, user_id: str, tenant_id: str, dept_id: Optional[str] = None):
         """
-        Main entry point. Checks file against active policies using Hybrid Engine.
+        Main entry point. Checks file against active policies using Universal Engine.
         """
         if not file.filename:
             return True
@@ -81,23 +75,20 @@ class FileGuardian:
             policies = res.data or []
         except Exception as e:
             logger.error(f"Failed to fetch policies: {e}")
-            policies = [] # Fail open? or Fail close? Let's assume fail open if DB down to avoid locking users, but log error.
+            policies = [] 
 
         if not policies:
             return True
 
         # 2. Extract Text (If possible)
-        # Assuming text/md/csv/code. For PDF, we would need pypdf (skipped for now as per instructions to mock text extraction logic)
         try:
             content = await file.read()
             await file.seek(0)
             text = content.decode("utf-8", errors="ignore")
         except:
-            # If binary/unreadable, we can't semantically scan.
-            # Only blocks based on filename extension (checked later) or fallback.
             text = ""
 
-        # 3. Check Policies
+        # 3. Check Policies Universally
         for policy in policies:
             # Dept Check
             p_dept = policy.get('target_dept_id')
@@ -107,82 +98,86 @@ class FileGuardian:
             rules = policy.get('rules', {})
             blocked_cats = rules.get('block_categories', [])
             
-            # Hybrid Check per Category
+            # Universal Check per Category
             for cat in blocked_cats:
-                 # Map internal Category -> Regex
-                 patterns = self.category_patterns.get(cat, [])
-                 if not patterns: continue 
+                 # Check if this file matches the FORBIDDEN concept 'cat'
+                 is_violation = False
+                 confidence = 0.0
                  
-                 # Quick Scan
-                 if self._quick_scan(text, patterns) or self._quick_scan(filename, patterns):
-                     # Potential Hit
-                     
-                     # Semantic Verify (if AI enabled and text available)
-                     is_real = True
-                     if self.ai_enabled and text and len(text) > 10:
-                         is_real = self._semantic_verify(text, cat)
-                         if not is_real:
-                             logger.info(f"🧠 AI Saved False Positive: '{filename}' matched {cat} regex but semantic check passed.")
-                     
-                     if is_real:
-                         reason = f"Detected sensitive content: {cat}"
-                         await self._audit_block(tenant_id, policy['id'], user_id, filename, cat, reason)
+                 # Strategy A: AI Universal Scan (If enabled and text available)
+                 if self.ai_enabled and text and len(text) > 10:
+                     is_violation, confidence = self._universal_semantic_check(text, cat)
+                     if not is_violation and confidence > 0.8:
+                         # High confidence it's SAFE
+                         pass 
+                 elif text:
+                     # Strategy B: Fallback Keyword Match (If AI off)
+                     if self._fallback_keyword_check(text, cat) or self._fallback_keyword_check(filename, cat):
+                         is_violation = True
+                         confidence = 1.0
+                 else:
+                     # Strategy C: Filename Check only (Binary files)
+                     if self._fallback_keyword_check(filename, cat):
+                         is_violation = True
+                         confidence = 0.5
                          
-                         if policy.get('mode') == 'ENFORCE':
-                             raise HTTPException(403, f"⛔ Bloqueado por política: Se detectó contenido sensible ({cat}).")
+                 if is_violation:
+                     logger.info(f"🚫 Universal Block Triggered: {cat} (Confidence: {confidence})")
+                     reason = f"Universal Semantic Match: {cat}"
+                     await self._audit_block(tenant_id, policy['id'], user_id, filename, cat, reason)
+                     
+                     if policy.get('mode') == 'ENFORCE':
+                         raise HTTPException(403, f"⛔ Bloqueado: Se detectó contenido sensible del tipo '{cat}'.")
         return True
 
-    def _quick_scan(self, text: str, patterns: List[str]) -> bool:
-        """Simple Regex Check"""
-        for pattern in patterns:
-            if re.search(pattern, text):
-                return True
-        return False
-
-    def _semantic_verify(self, text: str, category: str) -> bool:
+    def _universal_semantic_check(self, text: str, category: str) -> Tuple[bool, float]:
         """
-        Uses Local NLI to determine true intent.
-        Returns TRUE if it IS a violation (Real Data).
-        Returns FALSE if it is innocent (Discussion/Code/Reference).
+        Asks the AI: "Is this {category}?"
+        Returns (IsViolation, Confidence)
         """
-        snippet = text[:2000] # First 2k chars usually contain header/context
+        snippet = text[:2000]
         
-        # Dynamic Candidate Labels based on Category
-        if category in ["INVOICE", "FINANCIAL_REPORT"]:
-             candidate_labels = [
-                "accounting document containing real financial data", # Hit
-                "educational text about finance",                   # Miss
-                "software code related to billing",                 # Miss
-                "general discussion about invoices"                 # Miss
-            ]
-             hit_label = "real financial data"
-             
-        elif category in ["PAYSLIP", "DNI", "HR"]:
-             candidate_labels = [
-                "private employee personal data",                   # Hit
-                "public human resources policy document",           # Miss
-                "resume or cv template"                             # Miss
-            ]
-             hit_label = "private employee"
-        else:
-             # Fallback
-             return True
-             
+        # Dynamic Candidate Labels created from the USER'S STRING
+        # We don't know what 'category' is, but the NLI model understands English/Concepts.
+        # e.g. category="Secret Protocol"
+        
+        # Positive Label (The Forbidden Thing)
+        label_violation = f"this is a {category}"
+        
+        # Negative Labels (The Safe Things)
+        label_safe_1 = f"discussion about {category}"
+        label_safe_2 = "educational or reference text"
+        label_safe_3 = "source code or configuration"
+        
+        candidate_labels = [label_violation, label_safe_1, label_safe_2, label_safe_3]
+        
         try:
             result = self.classifier(snippet, candidate_labels)
             top_label = result['labels'][0]
             top_score = result['scores'][0]
             
-            logger.debug(f"AI Check {category}: {top_label} ({top_score:.2f})")
+            logger.debug(f"Universal AI Check '{category}': {top_label} ({top_score:.2f})")
             
-            if hit_label in top_label and top_score > 0.6:
-                return True
+            if top_label == label_violation and top_score > 0.5:
+                return True, top_score
             
-            return False
+            return False, top_score
             
         except Exception as e:
-            logger.error(f"Semantic Verify Failed: {e}")
-            return True # Fail Safe -> Block if AI fails
+            logger.error(f"Universal Scan Failed: {e}")
+            # Fail Open or Closed? For universal, fail open to avoid blocking everything on error.
+            return False, 0.0
+
+    def _fallback_keyword_check(self, text: str, category: str) -> bool:
+        """
+        Fallback if AI is dead. Matches the category name itself as a keyword.
+        e.g. if category is "INVOICE", looks for "invoice".
+        """
+        # Simple heuristic: The category name, singular or plural
+        pattern = re.escape(category)
+        if re.search(pattern, text, re.IGNORECASE):
+            return True
+        return False
 
     async def _audit_block(self, tenant_id, policy_id, user_id, filename, category, reason):
         try:
@@ -196,7 +191,7 @@ class FileGuardian:
                     "filename": filename,
                     "detected_category": category,
                     "reason": reason, 
-                    "method": "SMART_SEMANTIC_GUARD"
+                    "method": "UNIVERSAL_SEMANTIC_GUARD"
                 },
                 "created_at": "now()"
             }
