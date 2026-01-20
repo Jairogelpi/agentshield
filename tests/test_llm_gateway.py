@@ -4,7 +4,10 @@ Tests for LLM Gateway - Circuit Breaker, Canary & Resilience.
 
 import pytest
 
-from app.services.llm_gateway import CANARY_CONFIG, FALLBACK_CHAINS, CircuitBreaker
+from app.services.llm_gateway import CANARY_CONFIG, DEFAULT_CHAINS, CircuitBreaker
+
+# Alias for backwards compatibility in tests
+FALLBACK_CHAINS = DEFAULT_CHAINS
 
 
 class TestFallbackChains:
