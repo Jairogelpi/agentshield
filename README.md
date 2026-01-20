@@ -1,5 +1,7 @@
 # 🛡️ AgentShield OS (Enterprise Core)
 
+[![CI](https://github.com/Jairogelpi/agentshield/actions/workflows/ci.yml/badge.svg)](https://github.com/Jairogelpi/agentshield/actions/workflows/ci.yml)
+
 > **El Sistema Operativo de Confianza y Gasto para IA Empresarial**
 >
 > Una plataforma "God Tier" que transforma la adopción de IA corporativa: de un riesgo incontrolable a un activo auditado, presupuestado y optimizado.

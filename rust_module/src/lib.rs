@@ -172,5 +172,89 @@ fn agentshield_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sign_c2pa_image_fast, m)?)?;
     m.add_function(wrap_pyfunction!(scan_pii_fast, m)?)?;
     m.add_function(wrap_pyfunction!(scrub_pii_fast, m)?)?;
+    m.add_function(wrap_pyfunction!(scan_entropy_fast, m)?)?;
     Ok(())
 }
+
+// ─────────────────────────────────────────────────────────────
+// RUST UNIT TESTS
+// ─────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- PII SCANNING TESTS ---
+    
+    #[test]
+    fn test_email_detection() {
+        let findings = scan_pii_fast("Contact john@example.com for info");
+        assert!(findings.contains(&"EMAIL".to_string()));
+    }
+
+    #[test]
+    fn test_credit_card_detection() {
+        let findings = scan_pii_fast("Card: 4111-1111-1111-1111");
+        assert!(findings.contains(&"CREDIT_CARD".to_string()));
+    }
+
+    #[test]
+    fn test_phone_detection() {
+        let findings = scan_pii_fast("Call +14155551234");
+        assert!(findings.contains(&"PHONE".to_string()));
+    }
+
+    #[test]
+    fn test_ip_detection() {
+        let findings = scan_pii_fast("Server IP: 192.168.1.100");
+        assert!(findings.contains(&"IP_ADDRESS".to_string()));
+    }
+
+    #[test]
+    fn test_normal_text_no_pii() {
+        let findings = scan_pii_fast("Hello world, this is normal text.");
+        assert!(findings.is_empty());
+    }
+
+    // --- PII SCRUBBING TESTS ---
+
+    #[test]
+    fn test_scrub_email() {
+        let result = scrub_pii_fast("Email: test@test.com");
+        assert!(result.contains("<EMAIL>"));
+        assert!(!result.contains("test@test.com"));
+    }
+
+    #[test]
+    fn test_scrub_credit_card() {
+        let result = scrub_pii_fast("Card 4111 1111 1111 1111");
+        assert!(result.contains("<CREDIT_CARD>"));
+    }
+
+    #[test]
+    fn test_scrub_preserves_normal_text() {
+        let result = scrub_pii_fast("Hello world");
+        assert_eq!(result, "Hello world");
+    }
+
+    // --- ENTROPY DETECTION TESTS ---
+
+    #[test]
+    fn test_high_entropy_secret() {
+        let secrets = scan_entropy_fast("API key: sk-proj-8923hd98f23hd92hf923");
+        assert!(!secrets.is_empty());
+    }
+
+    #[test]
+    fn test_low_entropy_normal() {
+        let secrets = scan_entropy_fast("The quick brown fox");
+        assert!(secrets.is_empty());
+    }
+
+    #[test]
+    fn test_entropy_threshold() {
+        // Short tokens should be ignored
+        let secrets = scan_entropy_fast("abc 123 def");
+        assert!(secrets.is_empty());
+    }
+}
+
