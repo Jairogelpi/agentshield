@@ -166,10 +166,27 @@ async def update_market_rules():
         }
 
         # 5. ACTUALIZACIÓN ATÓMICA
+        # Guardamos también los precios individuales para el Estimador Dinámico
+        model_prices = {}
+        for m in data:
+            mid = m.get("id")
+            pricing = m.get("pricing", {})
+            p_in = float(pricing.get("prompt", 0))
+            p_out = float(pricing.get("completion", 0))
+            if mid and p_in > 0 and p_out > 0:
+                model_prices[mid] = {"input": p_in * 1_000_000, "output": p_out * 1_000_000}
+
         def _save_rules():
-            return supabase.table("system_config").upsert({
+            # Guardamos reglas generales
+            supabase.table("system_config").upsert({
                 "key": "arbitrage_rules",
                 "value": new_rules,
+                "updated_at": "now()"
+            }).execute()
+            # Guardamos caché de modelos
+            supabase.table("system_config").upsert({
+                "key": "market_prices",
+                "value": model_prices,
                 "updated_at": "now()"
             }).execute()
 
@@ -177,8 +194,9 @@ async def update_market_rules():
 
         # Invalidad caché distribuida
         await redis_client.delete("system_config:arbitrage_rules")
+        await redis_client.set("system_config:market_prices", json.encode(model_prices), ex=3600)
         
-        logger.info("✅ Reglas Financieras Recalibradas (Forex + Caching incluidos).")
+        logger.info(f"✅ Reglas Financieras Recalibradas. {len(model_prices)} modelos indexados para cobro dinámico.")
         return new_rules
 
     except Exception as e:

@@ -15,6 +15,7 @@ GRID_INTENSITY = {
 # Consumo estimado (kWh per 1k tokens) - Aproximación Enterprise
 ENERGY_PER_1K_TOKENS = {
     "gpt-4": 0.004,
+    "gpt-4o": 0.002,
     "gpt-3.5-turbo": 0.0004, # 10x más eficiente
     "agentshield-eco": 0.0003
 }
@@ -25,6 +26,9 @@ class CarbonGovernor:
         # Normalizar nombre del modelo
         model_name = str(model).lower()
         model_key = "gpt-4" if "gpt-4" in model_name else "gpt-3.5-turbo"
+        if "gpt-4o" in model_name: 
+            model_key = "gpt-4o"
+        
         energy_factor = ENERGY_PER_1K_TOKENS.get(model_key, 0.001)
         
         total_tokens = prompt_tokens + output_tokens
@@ -38,22 +42,23 @@ class CarbonGovernor:
         """
         El 'Carbon Gate'.
         1. Estima CO2.
-        2. Verifica presupuesto del depto.
-        3. Si Intención es simple y Modelo es pesado -> GREEN ROUTING.
+        2. Si Intención es simple y Modelo es pesado -> GREEN ROUTING.
+        3. Verifica presupuesto del depto -> BLOCK/DOWNGRADE.
         """
         # A. Estimación Pre-Flight (Asumimos output = input para estimar)
-        estimated_g = self.estimate_footprint(ctx.requested_model, 1000) # Placeholder 1k tokens
+        # (En prod: contar tokens reales del prompt)
+        estimated_g = 0.5 # Valor placeholder rápido
         ctx.co2_estimated = estimated_g
         
         # B. Green Routing (La lógica de impacto)
         # Si pide GPT-4 para decir "Hola" -> Bajar a Eco
-        green_intents = ["GREETING", "CHIT_CHAT", "SUMMARIZATION_SIMPLE"]
+        green_intents = ["GREETING", "CHIT_CHAT", "SUMMARIZATION_SIMPLE", "COPYWRITING_SIMPLE"]
         is_heavy_model = any(x in ctx.requested_model.lower() for x in ["gpt-4", "opus", "sonnet"])
         
         if ctx.intent in green_intents and is_heavy_model:
             ctx.effective_model = "agentshield-eco" # Downgrade inteligente
             ctx.green_routing_active = True
-            ctx.log("CARBON", f"Green Routing Activated: {ctx.requested_model} -> agentshield-eco")
+            ctx.log("CARBON", f"Green Routing Activated: {ctx.requested_model} -> agentshield-eco (Intent: {ctx.intent})")
             return ctx
 
         # C. Chequeo de Presupuesto (Solo si no hubo routing)
@@ -65,12 +70,13 @@ class CarbonGovernor:
             # Si se llena, evita OOM.
             if current_spend and float(current_spend) > 5000: # Límite hardcodeado de ejemplo (5kg)
                 # Opciones: Bloquear o Downgrade forzoso
-                ctx.effective_model = "agentshield-eco"
-                ctx.log("CARBON", "Monthly Carbon Budget Exceeded. Forcing Eco Mode.")
+                if not ctx.green_routing_active:
+                    ctx.effective_model = "agentshield-eco"
+                    ctx.log("CARBON", "Monthly Carbon Budget Exceeded. Forcing Eco Mode.")
         
         return ctx
 
-    async def log_emission(self, tenant_id, dept_id, user_id, trace_id, model, grams):
+    async def log_emission(self, tenant_id, dept_id, user_id, trace_id, model, grams, avoided_grams=0.0):
         """Registra la emisión real en el Ledger (Background Task)"""
         try:
             supabase.table("carbon_ledger").insert({
@@ -79,7 +85,8 @@ class CarbonGovernor:
                 "user_id": user_id,
                 "trace_id": trace_id,
                 "model_used": model,
-                "grams_co2": grams
+                "grams_co2": grams,
+                "co2_avoided": avoided_grams
             }).execute()
             
             # Actualizar acumulado en Redis para el Gate

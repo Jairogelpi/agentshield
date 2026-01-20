@@ -1,16 +1,19 @@
+from pydantic import BaseModel, Field
+from typing import List, Optional, Any
+
 class DecisionContext(BaseModel):
     """
     El Estado Global de una Petición en el Decision Graph.
-    Acumula decisiones de cada 'Gate' para el recibo final.
+    Acumula decisiones de cada 'Gate' (Identity, Risk, Carbon, etc.)
     """
     # 1. Identity
     trace_id: str
     tenant_id: str
     user_id: str
     dept_id: Optional[str]
-    email: Optional[str] = None
+    email: Optional[str] = None # Mantenemos email para el recibo
     
-    # 2. Intent
+    # 2. Intent & Budget
     intent: str = "GENERAL"
     
     # 3. Risk State

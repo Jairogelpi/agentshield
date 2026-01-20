@@ -201,7 +201,6 @@ import logging
 
 logger = logging.getLogger("agentshield.auditor")
 
-class ReceiptManager:
     async def create_and_sign_receipt(
         self,
         tenant_id: str,
@@ -214,8 +213,8 @@ class ReceiptManager:
         Enterprise Forensics: Creates and signs a receipt in background.
         Calculates Net/Gross costs and CO2 for precise internal chargeback.
         """
-        model_requested = metadata.get("original_model", request_data.get("model", "agentshield-fast"))
-        model_effective = metadata.get("effective_model", response_data.model if hasattr(response_data, "model") else model_requested)
+        model_requested = metadata.get("requested_model", request_data.get("model", "agentshield-fast"))
+        model_effective = metadata.get("effective_model", model_requested)
 
         # 1. Usage Data
         usage = getattr(response_data, "usage", {})
@@ -226,9 +225,9 @@ class ReceiptManager:
         compl_t = usage.get("completion_tokens", 0)
         total_t = prompt_t + compl_t
 
-        # 2. Financial & Carbon Audit (Double-Entry)
-        cost_real = estimate_cost(model_effective, prompt_t, compl_t)
-        cost_gross = estimate_cost(model_requested, prompt_t, compl_t)
+        # 2. Financial & Carbon Audit (Double-Entry) - ASYNC
+        cost_real = await estimate_cost(model_effective, prompt_t, compl_t)
+        cost_gross = await estimate_cost(model_requested, prompt_t, compl_t)
         
         # CO2 Tracking
         co2_actual = carbon_governor.estimate_footprint(model_effective, prompt_t, compl_t)
@@ -252,7 +251,8 @@ class ReceiptManager:
             transaction_data=transaction_data,
             policy_snapshot={
                 "trust_score": metadata.get("trust_score"),
-                "intent": metadata.get("intent")
+                "intent": metadata.get("intent"),
+                "risk_mode": metadata.get("risk_mode")
             }
         )
 

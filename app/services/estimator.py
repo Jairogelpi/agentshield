@@ -18,20 +18,51 @@ PRICING_TABLE = {
     "default": {"input": 1.0, "output": 2.0}
 }
 
-def estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+from app.db import redis_client
+import json
+import asyncio
+
+async def estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
     """
-    Calcula el coste estimado en USD basado en el modelo y tokens.
+    Calcula el coste estimado en USD basado en el mercado real.
+    Busca en el caché de Market Oracle (Redis).
     """
-    # Buscar el modelo exacto o el más cercano
-    config = PRICING_TABLE.get("default")
-    model_lower = model.lower()
-    
-    for key, values in PRICING_TABLE.items():
-        if key in model_lower:
-            config = values
-            break
-            
-    input_cost = (prompt_tokens / 1_000_000) * config["input"]
-    output_cost = (completion_tokens / 1_000_000) * config["output"]
-    
-    return round(input_cost + output_cost, 6)
+    try:
+        # 1. Intentar obtener precios de Redis
+        cached_prices = await redis_client.get("system_config:market_prices")
+        prices = {}
+        if cached_prices:
+            prices = json.loads(cached_prices)
+        
+        # 2. Buscar el modelo
+        model_lower = model.lower()
+        config = None
+        
+        # Búsqueda exacta primero
+        if model in prices:
+            config = prices[model]
+        else:
+            # Búsqueda por similitud
+            for mid, vals in prices.items():
+                if mid.lower() in model_lower or model_lower in mid.lower():
+                    config = vals
+                    break
+        
+        # 3. Fallback al PRICING_TABLE estático si falla el oráculo
+        if not config:
+            for key, values in PRICING_TABLE.items():
+                if key in model_lower:
+                    config = values
+                    break
+        
+        if not config:
+            config = PRICING_TABLE["default"]
+
+        input_cost = (prompt_tokens / 1_000_000) * config["input"]
+        output_cost = (completion_tokens / 1_000_000) * config["output"]
+        
+        return round(input_cost + output_cost, 6)
+    except Exception as e:
+        logger.error(f"Error en estimación dinámica: {e}")
+        # Fallback ultra-seguro
+        return 0.000001

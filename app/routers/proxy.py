@@ -127,18 +127,18 @@ async def universal_proxy(
     # ==============================================================================
     # 5.5 BUDGET GATE (Velocity & Balance)
     # ==============================================================================
-    # can_spend, limit_msg = await limiter.check_velocity_and_budget(identity)
-    # if not can_spend:
-    #     background_tasks.add_task(
-    #         event_bus.publish,
-    #         ctx.tenant_id,
-    #         "BUDGET_EXCEEDED",
-    #         "WARNING",
-    #         {"message": "Budget or Rate Limit Reached"},
-    #         actor_id=ctx.user_id,
-    #         trace_id=ctx.trace_id
-    #     )
-    #     raise HTTPException(429, detail=f"📉 Budget/Rate Limit Exceeded")
+    can_spend, limit_msg = await limiter.check_velocity_and_budget(identity)
+    if not can_spend:
+        background_tasks.add_task(
+            event_bus.publish,
+            ctx.tenant_id,
+            "BUDGET_EXCEEDED",
+            "WARNING",
+            {"message": limit_msg or "Budget or Rate Limit Reached"},
+            actor_id=ctx.user_id,
+            trace_id=ctx.trace_id
+        )
+        raise HTTPException(429, detail=f"📉 AgentShield: {limit_msg or 'Budget Exceeded'}")
 
     # ==============================================================================
     # 6. EXECUTION ROUTER
@@ -156,19 +156,27 @@ async def universal_proxy(
     # ==============================================================================
     # 7. RECEIPT & SETTLEMENT (Async)
     # ==============================================================================
-    # Calculamos CO2 real post-ejecución
-    usage = getattr(response, 'usage', None)
-    prompt_tokens = usage.prompt_tokens if usage else 1000
-    completion_tokens = usage.completion_tokens if usage else 0
     
+    # A. Calcular CO2 real vs evitado post-ejecución
+    usage = getattr(response, "usage", None)
+    if not usage and hasattr(response, "model_dump"):
+        usage = response.model_dump().get("usage", {})
+        
+    prompt_tokens = getattr(usage, "prompt_tokens", 0) if hasattr(usage, "prompt_tokens") else usage.get("prompt_tokens", 1000)
+    completion_tokens = getattr(usage, "completion_tokens", 0) if hasattr(usage, "completion_tokens") else usage.get("completion_tokens", 0)
+    total_tokens = prompt_tokens + completion_tokens
+
     co2_actual = carbon_governor.estimate_footprint(ctx.effective_model, prompt_tokens, completion_tokens)
+    co2_gross = carbon_governor.estimate_footprint(ctx.requested_model, prompt_tokens, completion_tokens)
+    co2_avoided = max(0, co2_gross - co2_actual)
     
     background_tasks.add_task(
         carbon_governor.log_emission,
         ctx.tenant_id, ctx.dept_id, ctx.user_id, 
-        ctx.trace_id, ctx.effective_model, co2_actual
+        ctx.trace_id, ctx.effective_model, co2_actual, co2_avoided
     )
     
+    # B. Generar Recibo Firmado con Contexto de Decisión completo
     background_tasks.add_task(
         receipt_manager.create_and_sign_receipt,
         tenant_id=ctx.tenant_id,
@@ -179,9 +187,17 @@ async def universal_proxy(
     )
 
     # 8. RESPONSE
-    content = json.loads(response.json()) if hasattr(response, "json") else response
+    try:
+        if hasattr(response, "model_dump"):
+            content = response.model_dump()
+        elif hasattr(response, "json"):
+            content = response.json()
+        else:
+            content = response
+    except:
+        content = response
+
     final_response = JSONResponse(content=content)
-    
     final_response.headers["X-AgentShield-Trace-ID"] = ctx.trace_id
     final_response.headers["X-AgentShield-Trust-Score"] = str(trust_policy["trust_score"])
     
