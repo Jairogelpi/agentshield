@@ -81,8 +81,10 @@ Un empleado de Marketing sube "Nóminas_2025.pdf" para resumirlas con IA.
 ### La Solución: Gatekeeper Nativo
 Interceptamos el flujo en `POST /v1/files` antes de indexar nada.
 
-1.  **Detección de Intención**: Analizamos el archivo (Nombre, tipo, contenido inicial).
-2.  **Anti-DoS (Size Limit)**: Bloqueo inmediato de archivos >10MB para evitar saturación de RAM en el contenedor (evita ataques de disponibilidad).
+1.  **Hybrid Sniper Scan**: 
+    *   **Paso 1 (0ms)**: Regex detecta palabras clave ("Factura").
+    *   **Paso 2 (200ms)**: Modelo de IA Local (DeBERTa/DistilBART) analiza el contexto. Diferencia entre "Una factura real" (BLOQUEAR) y "Un manual sobre facturas" (PERMITIR).
+2.  **Anti-DoS (Size Limit)**: Bloqueo inmediato de archivos >10MB para evitar saturación de RAM.
 3.  **Motor de Políticas Unified**: Reutilizamos la tabla `policies` con `action='BLOCK_UPLOAD'`.
     *   Ejemplo: `{"block_categories": ["INVOICE", "PAYSLIP"]}`
 4.  **Auditoría**: Cada bloqueo se registra en `policy_events` junto con los bloqueos de prompts, unificando la visión de seguridad.
