@@ -196,6 +196,7 @@ async def create_forensic_receipt(
     
     return receipt_record
 from app.services.estimator import estimate_cost
+from app.services.carbon import carbon_governor
 import logging
 
 logger = logging.getLogger("agentshield.auditor")
@@ -211,12 +212,12 @@ class ReceiptManager:
     ):
         """
         Enterprise Forensics: Creates and signs a receipt in background.
-        Now includes Savings & Gross Cost calculation for ROI.
+        Calculates Net/Gross costs and CO2 for precise internal chargeback.
         """
         model_requested = metadata.get("original_model", request_data.get("model", "agentshield-fast"))
         model_effective = metadata.get("effective_model", response_data.model if hasattr(response_data, "model") else model_requested)
 
-        # 1. Obtener Usage (Tokens)
+        # 1. Usage Data
         usage = getattr(response_data, "usage", {})
         if hasattr(usage, "model_dump"):
             usage = usage.model_dump()
@@ -225,47 +226,49 @@ class ReceiptManager:
         compl_t = usage.get("completion_tokens", 0)
         total_t = prompt_t + compl_t
 
-        # 2. Calcular Economics (Gross vs Net)
+        # 2. Financial & Carbon Audit (Double-Entry)
         cost_real = estimate_cost(model_effective, prompt_t, compl_t)
         cost_gross = estimate_cost(model_requested, prompt_t, compl_t)
-        savings = max(0, cost_gross - cost_real)
+        
+        # CO2 Tracking
+        co2_actual = carbon_governor.estimate_footprint(model_effective, prompt_t, compl_t)
+        co2_gross = carbon_governor.estimate_footprint(model_requested, prompt_t, compl_t)
 
-        # 3. Mapear a la lógica forense existente
+        # 3. Transaction Metadata for Signature
         transaction_data = {
             "model_requested": model_requested,
             "model_delivered": model_effective,
             "cost_usd": cost_real,
-            "cost_real": cost_real,
-            "cost_gross": cost_gross,
-            "savings_usd": savings,
-            "tokens": {"input": prompt_t, "output": compl_t},
-            "total_tokens": total_t,
-            "decision": "ALLOW",
-            "redactions_count": metadata.get("pii_redacted_count", 0)
+            "savings_usd": max(0, cost_gross - cost_real),
+            "tokens": {"input": prompt_t, "output": compl_t, "total": total_t},
+            "carbon_g": co2_actual,
+            "co2_avoided_g": max(0, co2_gross - co2_actual)
         }
         
-        # 4. Enriquecer Recibo Forense con nuevos campos financieros
+        # 4. Sign and Persist Forensic Receipt
         receipt_record = await create_forensic_receipt(
             tenant_id=tenant_id,
             user_email=user_id,
             transaction_data=transaction_data,
             policy_snapshot={
                 "trust_score": metadata.get("trust_score"),
-                "intent": metadata.get("intent"),
-                "risk_mode": metadata.get("risk_mode")
+                "intent": metadata.get("intent")
             }
         )
 
-        # 5. Insertar campos adicionales en la tabla principal (Audit Finaniero)
+        # 5. Enrich Database Record for fast reporting
         try:
             supabase.table("receipts").update({
                 "cost_real": cost_real,
                 "cost_gross": cost_gross,
-                "savings_usd": savings,
+                "savings_usd": transaction_data["savings_usd"],
                 "model_requested": model_requested,
-                "model_effective": model_effective
+                "model_effective": model_effective,
+                "co2_gross_g": co2_gross,
+                "co2_actual_g": co2_actual,
+                "cost_center_id": metadata.get("dept_id", "default")
             }).eq("id", receipt_record["id"]).execute()
         except Exception as e:
-            logger.error(f"Failed to update financial audit fields: {e}")
+            logger.error(f"Financial enrichment failed: {e}")
 
 receipt_manager = ReceiptManager()
