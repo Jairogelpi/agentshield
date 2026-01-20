@@ -116,6 +116,17 @@ async def signup_tenant(req: SignupRequest, authenticated_user_id: str = Depends
             "is_active": True
         }).execute()
         
+        # 7. Link User to Tenant in Supabase Auth (Critical for Middleware)
+        # This allows the frontend middleware to check app_metadata.tenant_id
+        try:
+            supabase.auth.admin.update_user_by_id(
+                target_owner_id,
+                {"app_metadata": {"tenant_id": new_tenant['id']}}
+            )
+            logger.info(f"✅ User {target_owner_id} linked to tenant {new_tenant['id']} in app_metadata")
+        except Exception as meta_err:
+            logger.warning(f"⚠️ Failed to update app_metadata: {meta_err}")
+        
         return {
             "status": "created",
             "tenant_id": new_tenant['id'],
