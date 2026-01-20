@@ -161,3 +161,20 @@ Soportamos dos modos de despliegue para el cliente:
 
 **Implementación**: `app/routers/public_config.py` y `scripts/seed_whitelabel.sql`.
 
+---
+
+## 9. Trust Engine & Behavioral Governance ⚖️
+AgentShield gestiona la reputación del usuario para un gobierno justo.
+- **Normal (70-100)**: Acceso total. Restaura +5 puntos cada 24h de "Clean Sheet".
+- **Restricted (30-69)**: Downgrade automático a modelos seguros.
+- **Supervised (<30)**: Bloqueo crítico con requerimiento de aprobación manual.
+
+## 10. Green AI & ESG Compliance 🌿
+- **Carbon Budgets**: El CFO puede establecer límites de gCO2 por departamento.
+- **Eco-Routing**: Desvío a modelos eficientes (`agentshield-eco`) si la tarea es trivial.
+- **Sustainability Ledger**: Registro de emisiones y "Carbon Avoided" para reportes ESG.
+
+## 11. DPO-as-Code (Automated Compliance) ⚖️
+- **Right to Forget**: Purga quirúrgica de PII manteniendo la integridad financiera del tenant.
+- **Instant Certification**: Generación de certificados PDF firmados criptográficamente para auditorías.
+- **Audit Ledger**: Cada acción de gobierno queda sellada y vinculada a un certificado inmutable.

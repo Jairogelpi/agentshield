@@ -1,29 +1,35 @@
-# app/schema.py
-from pydantic import BaseModel, Field
-from typing import Optional, List
-import uuid
-
-class AgentShieldContext(BaseModel):
+class DecisionContext(BaseModel):
     """
-    Objetivo de Contexto Unificado.
-    Se genera en el Middleware de Identidad y viaja hasta el Recibo Forense.
+    El Estado Global de una Petición en el Decision Graph.
+    Acumula decisiones de cada 'Gate' para el recibo final.
     """
-    # Identidad (Cargado desde JWT)
+    # 1. Identity
+    trace_id: str
     tenant_id: str
     user_id: str
-    dept_id: str
-    email: str
-    role: str = "employee"
+    dept_id: Optional[str]
+    email: Optional[str] = None
     
-    # Estado de Gobierno (Calculado por Policy Engine)
-    trust_score: int = Field(default=100, description="Nivel de confianza del usuario (0-100)")
-    policy_mode: str = Field(default="ENFORCE", description="SHADOW o ENFORCE")
-    data_classification: str = Field(default="INTERNAL", description="Nivel de datos permitido (PUBLIC, INTERNAL, CONFIDENTIAL)")
+    # 2. Intent
+    intent: str = "GENERAL"
     
-    # Trazabilidad
-    request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_ip: Optional[str] = None
+    # 3. Risk State
+    trust_score: int = 100
+    risk_mode: str = "normal" # normal, restricted, supervised
     
-    class Config:
-        # Permite usar este modelo en otras clases Pydantic de forma laxa
-        extra = "ignore" 
+    # 4. Compliance State
+    pii_redacted: bool = False
+    
+    # 5. Carbon State
+    co2_estimated: float = 0.0
+    green_routing_active: bool = False
+    
+    # 6. Execution State
+    requested_model: str
+    effective_model: str
+    
+    # Auditoría
+    decision_log: List[str] = Field(default_factory=list)
+    
+    def log(self, gate: str, decision: str):
+        self.decision_log.append(f"[{gate}] {decision}")

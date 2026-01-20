@@ -45,17 +45,25 @@ graph TD
 - **Liquidación**: Los pagos se registran en el `internal_ledger`.
 - **Implementación**: `marketplace.py`.
 
-### 7. Execution Router
+### 7. Carbon Gate (Green Routing)
+- **Función**: Desvía la petición a modelos eco-eficientes si la intención es trivial (ej: saludos).
+- **Implementación**: `carbon_governor.check_budget_and_route`.
+
+### 8. Execution Router
 - **Función**: Arbitraje multimodelo con resiliencia y circuit breaking.
 - **Implementación**: `execute_with_resilience` in `llm_gateway.py`.
 
-### 8. Receipt Writer (Forensic Web)
-- **Función**: Firma criptográficamente el resultado y el hash de las políticas aplicadas.
-- **Implementación**: `create_forensic_receipt` in `receipt_manager.py`.
+### 9. Forensic Audit & Settlement
+- **Función**: Firma el recibo forense con el `DecisionContext` completo y liquida costos.
+- **Implementación**: `receipt_manager.py` y `limiter.py`.
 
-### 9. Ledger Settlement (CFO Brain)
-- **Función**: Liquidación atómica en Redis y persistencia en el `reputation_ledger`.
-- **Implementación**: `charge_hierarchical_wallets` in `limiter.py`.
+## The Decision Context Passport 🛂
+Cada petición genera un `DecisionContext` inmutable que actúa como un pasaporte, acumulando logs de cada Gate:
+1. `trace_id`: Identificador único universal.
+2. `trust_score`: Instantánea de reputación al inicio.
+3. `intent`: Clasificación semántica del usuario.
+4. `green_routing_active`: Flag si se optimizó por clima.
+5. `decision_log`: Rastro de qué Gate tomó qué decisión.
 
 ---
 **AgentShield OS: Control Total sobre el Caos de la IA.**

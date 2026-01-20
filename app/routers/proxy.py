@@ -1,15 +1,17 @@
-﻿from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
+﻿# app/routers/proxy.py
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
+
+# Servicios del Decision Graph
 from app.services.identity import verify_identity_envelope, VerifiedIdentity
+from app.services.semantic_router import semantic_router
 from app.services.trust_system import trust_system
 from app.services.pii_guard import pii_guard
+from app.services.carbon import carbon_governor
 from app.services.llm_gateway import execute_with_resilience
-from app.services.limiter import limiter 
 from app.services.receipt_manager import receipt_manager
-from app.services.semantic_router import semantic_router
-import logging
-import json
-import uuid
+from app.schema import DecisionContext
 
 router = APIRouter()
 logger = logging.getLogger("agentshield.proxy")
@@ -24,81 +26,91 @@ async def universal_proxy(
     El Corazón del AgentShield OS.
     Flujo: Identity -> Trust -> Semantic -> PII -> Budget -> Execution -> Audit
     """
-    trace_id = f"tr_{uuid.uuid4().hex[:8]}"
     
-    # 1. PARSE REQUEST & CONTEXT
-    # ---------------------------------------------------------
+    # 0. INIT REQUEST
     try:
         body = await request.json()
-    except Exception:
-        raise HTTPException(400, "Invalid JSON body")
-
-    requested_model = body.get("model", "agentshield-fast")
+    except:
+        raise HTTPException(400, "Invalid JSON")
+        
     messages = body.get("messages", [])
-    
-    # 2. TRUST ENGINE ENFORCEMENT (Decision Graph Node 1)
-    # ---------------------------------------------------------
-    trust_policy = await trust_system.enforce_policy(
-        str(identity.tenant_id), 
-        identity.user_id, 
-        requested_model
+    requested_model = body.get("model", "agentshield-fast")
+    user_prompt = messages[-1]['content'] if messages and isinstance(messages[-1].get('content'), str) else ""
+
+    # ==============================================================================
+    # 1. CONTEXT BUILDER
+    # ==============================================================================
+    ctx = DecisionContext(
+        trace_id=f"trc_{uuid.uuid4().hex[:12]}",
+        tenant_id=str(identity.tenant_id),
+        user_id=identity.user_id,
+        dept_id=str(identity.dept_id or ""),
+        email=identity.email,
+        requested_model=requested_model,
+        effective_model=requested_model
     )
+
+    # ==============================================================================
+    # 2. INTENT CLASSIFIER (Semantic Gate)
+    # ==============================================================================
+    ctx.intent = await semantic_router.classify_intent(ctx.tenant_id, user_prompt)
+    ctx.log("INTENT", f"Classified as {ctx.intent}")
+    
+    # ==============================================================================
+    # 3. RISK ENGINE (Trust Gate)
+    # ==============================================================================
+    trust_policy = await trust_system.enforce_policy(ctx.tenant_id, ctx.user_id, ctx.requested_model)
     
     if trust_policy["requires_approval"]:
         logger.warning(f"🛡️ TRUST LOCK: User {identity.email} score {trust_policy['trust_score']}")
         raise HTTPException(403, detail=f"⛔ Trust Lock: {trust_policy['blocking_reason']}")
+        
+    if trust_policy["effective_model"] != ctx.requested_model:
+        ctx.effective_model = trust_policy["effective_model"]
+        ctx.risk_mode = trust_policy["mode"]
+        ctx.log("RISK", f"Downgraded to {ctx.effective_model} due to Trust Score")
 
-    effective_model = trust_policy["effective_model"]
-    body["model"] = effective_model 
-    
-    # 3. PII & DLP GUARD (Decision Graph Node 2)
-    # ---------------------------------------------------------
+    # ==============================================================================
+    # 4. COMPLIANCE GATE (PII Check)
+    # ==============================================================================
     pii_result = await pii_guard.scan(messages)
-    
     if pii_result.get("blocked"):
         background_tasks.add_task(
             trust_system.adjust_score,
-            tenant_id=str(identity.tenant_id),
-            user_id=identity.user_id,
+            tenant_id=ctx.tenant_id,
+            user_id=ctx.user_id,
             delta=-20,
             reason="Security Block: High Sensitivity PII detected",
-            event_type="PII_BLOCK",
-            metadata={"severity": "HIGH", "findings": pii_result.get("findings_count")}
+            event_type="PII_BLOCK"
         )
         raise HTTPException(400, "🛡️ AgentShield Security: Envío bloqueado por datos altamente sensibles.")
-
-    elif pii_result.get("changed"):
+    
+    if pii_result.get("changed"):
+        messages = pii_result["cleaned_messages"]
+        ctx.pii_redacted = True
+        ctx.log("COMPLIANCE", "PII Redacted")
         background_tasks.add_task(
             trust_system.adjust_score,
-            tenant_id=str(identity.tenant_id),
-            user_id=identity.user_id,
+            tenant_id=ctx.tenant_id,
+            user_id=ctx.user_id,
             delta=-5,
             reason="Security Warning: PII redacted automatically",
-            event_type="PII_REDACT",
-            metadata={"severity": "MEDIUM", "findings": pii_result.get("findings_count")}
+            event_type="PII_REDACT"
         )
-        messages = pii_result.get("cleaned_messages")
 
-    # 4. BUDGET LIMITER (Decision Graph Node 3)
-    # ---------------------------------------------------------
-    can_spend, limit_msg = await limiter.check_velocity_and_budget(identity)
-    
-    if not can_spend:
-        background_tasks.add_task(
-            trust_system.adjust_score,
-            tenant_id=str(identity.tenant_id),
-            user_id=identity.user_id,
-            delta=-2,
-            reason="Rate Limit Exceeded",
-            event_type="VELOCITY_VIOLATION"
-        )
-        raise HTTPException(429, f"📉 Budget/Rate Limit: {limit_msg}")
+    # ==============================================================================
+    # 5. CARBON GATE (Green Routing)
+    # ==============================================================================
+    # Solo aplicamos si el motor de riesgo no ha degradado ya el modelo
+    if ctx.effective_model == ctx.requested_model:
+        ctx = await carbon_governor.check_budget_and_route(ctx)
 
-    # 5. EXECUTION ROUTER
-    # ---------------------------------------------------------
+    # ==============================================================================
+    # 6. EXECUTION ROUTER
+    # ==============================================================================
     try:
         response = await execute_with_resilience(
-            model=effective_model,
+            model=ctx.effective_model,
             messages=messages,
             user_id=identity.user_id
         )
@@ -106,54 +118,42 @@ async def universal_proxy(
         logger.error(f"Gateway Error: {e}")
         raise HTTPException(502, "AI Provider Gateway Error")
 
-    # 6. RECEIPT WRITER (Forensics)
-    # ---------------------------------------------------------
-    decision_metadata = {
-        "original_model": requested_model,
-        "effective_model": effective_model,
-        "trust_score_snapshot": trust_policy["trust_score"],
-        "trust_mode": trust_policy["mode"],
-        "pii_redacted": pii_result.get("changed", False),
-        "policy_hash": "ENTERPRISE_CORE_V1"
-    }
-
+    # ==============================================================================
+    # 7. RECEIPT & SETTLEMENT (Async)
+    # ==============================================================================
+    # Calculamos CO2 real post-ejecución
+    usage = getattr(response, 'usage', None)
+    prompt_tokens = usage.prompt_tokens if usage else 1000
+    completion_tokens = usage.completion_tokens if usage else 0
+    
+    co2_actual = carbon_governor.estimate_footprint(ctx.effective_model, prompt_tokens, completion_tokens)
+    
+    background_tasks.add_task(
+        carbon_governor.log_emission,
+        ctx.tenant_id, ctx.dept_id, ctx.user_id, 
+        ctx.trace_id, ctx.effective_model, co2_actual
+    )
+    
     background_tasks.add_task(
         receipt_manager.create_and_sign_receipt,
-        tenant_id=str(identity.tenant_id),
-        user_id=identity.user_id,
-        request_data={"model": effective_model, "trace_id": trace_id},
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        request_data={"model": ctx.effective_model, "trace_id": ctx.trace_id},
         response_data=response,
-        metadata=decision_metadata
+        metadata=ctx.model_dump()
     )
 
-    # 7. RESPONSE WITH EDUCATIONAL LAYER
-    # ---------------------------------------------------------
+    # 8. RESPONSE
     content = json.loads(response.json()) if hasattr(response, "json") else response
     final_response = JSONResponse(content=content)
     
-    # Header A: Estado actual
+    final_response.headers["X-AgentShield-Trace-ID"] = ctx.trace_id
     final_response.headers["X-AgentShield-Trust-Score"] = str(trust_policy["trust_score"])
-    final_response.headers["X-AgentShield-Trace-ID"] = trace_id
     
-    # Header B: Explicación de Restricciones (Auto-educación)
-    if trust_policy["mode"] == "restricted":
-        final_response.headers["X-AgentShield-Alert"] = "warning"
-        final_response.headers["X-AgentShield-Message"] = (
-            "⚠️ Acceso a modelos Premium restringido temporalmente. "
-            "Mantén 24h sin incidentes de seguridad para recuperar el nivel."
-        )
-    
-    elif trust_policy["mode"] == "supervised":
-        final_response.headers["X-AgentShield-Alert"] = "error"
-        final_response.headers["X-AgentShield-Message"] = (
-            "⛔ Nivel de confianza crítico. Todas tus acciones requieren aprobación manual. "
-            "Contacta a tu responsable o completa el módulo de re-entrenamiento."
-        )
-
-    if effective_model != requested_model:
+    if ctx.green_routing_active:
+        final_response.headers["X-AgentShield-Green"] = "Routed to Eco Model 🌱"
+        
+    if ctx.effective_model != ctx.requested_model and not ctx.green_routing_active:
         final_response.headers["X-AgentShield-Notice"] = "Model Downgraded due to Risk Policy"
     
-    if pii_result.get("changed"):
-        final_response.headers["X-AgentShield-Security"] = "Content Redacted"
-
     return final_response
