@@ -1,5 +1,6 @@
 # tests/test_entropy.py
 """Tests for the entropy scanning functionality in PII Guard."""
+
 import pytest
 
 from app.services.pii_guard import PIIEngine
@@ -22,7 +23,7 @@ class TestEntropyScanner:
         secret = "sk-proj-8Xk9LmN2pQwErTyUiOpAsdf1234567890qwertyuiopasdf"
         text = f"My secret key is {secret}"
         result = engine._entropy_scan(text)
-        
+
         # Should contain redaction marker
         assert "<SECRET_REDACTED>" in result
         # Original secret should be removed

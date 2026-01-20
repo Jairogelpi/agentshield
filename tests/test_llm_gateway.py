@@ -1,5 +1,6 @@
 # tests/test_llm_gateway.py
 """Tests for the LLM Gateway service."""
+
 import pytest
 
 from app.services.llm_gateway import CANARY_CONFIG, DEFAULT_CHAINS, CircuitBreaker

@@ -1,5 +1,6 @@
 # tests/test_pii_guard.py
 """Tests for the PII Guard service - testing actual exported functions."""
+
 import pytest
 
 from app.services.pii_guard import PIIEngine, fast_regex_scrub
@@ -45,7 +46,7 @@ class TestPIIEngine:
     def test_predict_method_exists(self):
         """Test that predict method exists."""
         engine = PIIEngine()
-        assert hasattr(engine, 'predict')
+        assert hasattr(engine, "predict")
         assert callable(engine.predict)
 
     def test_predict_returns_text(self):
@@ -62,7 +63,7 @@ class TestEntropyScanner:
     def test_method_exists(self):
         """Test that _entropy_scan method exists."""
         engine = PIIEngine()
-        assert hasattr(engine, '_entropy_scan')
+        assert hasattr(engine, "_entropy_scan")
         assert callable(engine._entropy_scan)
 
     def test_normal_text_unchanged(self):
@@ -87,9 +88,9 @@ class TestAsyncMethods:
         engine = PIIEngine()
         # The scan method is defined but may be a method of a different class structure
         # Check if the method exists
-        assert hasattr(engine, 'scan') or hasattr(PIIEngine, 'scan')
+        assert hasattr(engine, "scan") or hasattr(PIIEngine, "scan")
 
     def test_apply_custom_rules_async_exists(self):
         """Test that apply_custom_rules_async method exists."""
         engine = PIIEngine()
-        assert hasattr(engine, 'apply_custom_rules_async')
+        assert hasattr(engine, "apply_custom_rules_async")
