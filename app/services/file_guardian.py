@@ -13,7 +13,6 @@ from pdf2image import convert_from_bytes
 from litellm import acompletion # OpenAI Bridge
 
 # 🧠 Importaciones para la Inteligencia Artificial Local
-# Usamos 'pipeline' que descarga y gestiona el modelo automáticamente la primera vez
 try:
     from transformers import pipeline
     AI_AVAILABLE = True
@@ -24,28 +23,31 @@ logger = logging.getLogger("agentshield.file_guardian")
 
 class FileGuardian:
     """
-    Guardián de Archivos Híbrido: Regex Rápido + Verificación Semántica (IA).
-    
-    1. Usa Regex para detectar amenazas potenciales (0ms latencia).
-    2. Si detecta algo, usa un modelo NLP local (CPU) para confirmar el contexto.
-    3. Aplica políticas de bloqueo consultando Supabase.
+    Guardián Híbrido Dual:
+    - Modo A (Soberano): Regex + IA Local (CPU). Privacidad máxima.
+    - Modo B (Cloud): Regex + OpenAI (GPT-4). Precisión máxima.
+    Configurable por Tenant.
     """
     
     def __init__(self):
         self.classifier = None
+        self.ai_available_local = False
+        
+        # 1. Intentar cargar IA Local (Siempre disponible como fallback o modo soberano)
         if AI_AVAILABLE:
             try:
-                logger.info("🛡️ Inicializando Smart Guardian (Modelo NLI en CPU)...")
+                logger.info("🛡️ Inicializando Smart Guardian Local (Modelo NLI en CPU)...")
                 # Modelo ultra-ligero (40MB) para clasificación Zero-Shot rápida
                 self.classifier = pipeline(
                     "zero-shot-classification",
                     model="valhalla/distilbart-mnli-12-1",
                     device=-1 # Forzar CPU
                 )
+                self.ai_available_local = True
             except Exception as e:
-                logger.warning(f"⚠️ No se pudo cargar el modelo IA: {e}. Usando modo Regex Estricto.")
+                logger.warning(f"⚠️ No se pudo cargar modelo Local: {e}. Solo disponible modo Regex o OpenAI.")
 
-        # Patrones "Gatillo" (Trigger Patterns)
+        # Patrones "Gatillo"
         self.regex_triggers = {
             "INVOICE": [r"(?i)factura", r"(?i)invoice", r"(?i)iban", r"(?i)swift", r"(?i)total\s*a\s*pagar"],
             "HR_DATA": [r"(?i)nómina", r"(?i)salario", r"(?i)confidencial", r"(?i)dni", r"(?i)passport"],
@@ -58,17 +60,30 @@ class FileGuardian:
             
         filename = file.filename
         
-        # 1. Leer una muestra del contenido (Primeros 2KB para velocidad)
-        # Esto evita cargar archivos de 500MB en RAM
+        # 1. Leer contenido (Texto o OCR)
         content_sample = await self._read_file_head(file)
         
-        # 2. Análisis Inteligente
-        content_category = await self._analyze_content(filename, content_sample)
+        # 2. Obtener modo de seguridad del Tenant
+        security_mode = await self._get_tenant_security_mode(tenant_id)
         
-        # 3. Consultar Supabase para ver si esa categoría está prohibida
-        await self._enforce_policy(tenant_id, dept_id, user_id, filename, content_category)
-
+        # 3. Análisis Inteligente (Pasamos el modo)
+        content_category = await self._analyze_content(filename, content_sample, security_mode)
+        
+        # 4. Enforce
+        await self._enforce_policy(tenant_id, dept_id, user_id, filename, content_category, security_mode)
         return True
+
+    async def _get_tenant_security_mode(self, tenant_id: str) -> str:
+        """Fetch 'security_config' from tenant. Default: 'LOCAL'."""
+        try:
+            # En producción, esto debería estar cacheado (Redis)
+            res = supabase.table("tenants").select("security_config").eq("id", tenant_id).single().execute()
+            if res.data and res.data.get('security_config'):
+                return res.data['security_config'].get('ai_mode', 'LOCAL')
+        except:
+             # Si falla la DB o no existe la columna, default a LOCAL (Privacidad por defecto)
+            pass
+        return "LOCAL"
 
     async def _read_file_head(self, file: UploadFile, size=2048) -> str:
         """
@@ -119,12 +134,11 @@ class FileGuardian:
         # Devolvemos los primeros 2000 caracteres para la IA
         return text_content[:2000]
 
-    async def _analyze_content(self, filename: str, text: str) -> str:
+    async def _analyze_content(self, filename: str, text: str, mode: str = 'LOCAL') -> str:
         """
-        El cerebro del sistema (Powered by OpenAI).
-        Retorna: 'INVOICE', 'HR_DATA' o 'GENERIC' (seguro).
+        Cerebro Dual: Decide si usar Local AI o OpenAI basado en 'mode'.
         """
-        # A. Barrido Regex (Rápido)
+        # A. Barrido Regex (Siempre activo por performance)
         detected_trigger = None
         for category, patterns in self.regex_triggers.items():
             for pattern in patterns:
@@ -133,34 +147,60 @@ class FileGuardian:
                     break
         
         if not detected_trigger:
-            return "GENERIC" # No parece peligroso
+            return "GENERIC"
 
-        # B. Verificación IA (Lento pero preciso)
-        # Usamos OpenAI para resolver ambigüedad (Zero False Positives)
-        # 100% Accuracy requerida por el usuario.
-        
-        # Llamada Asíncrona a la IA Suprema
-        return await self._semantic_verify_openai(filename, text, detected_trigger)
+        # B. Verificación IA
+        logger.info(f"🔍 Security Check triggered for '{filename}'. Mode: {mode}")
+
+        # MODO CLOUD (GPT-4) - Precisión Total
+        if mode == "OPENAI":
+             return await self._semantic_verify_openai(filename, text, detected_trigger)
+
+        # MODO LOCAL (Soberano) - Privacidad Total
+        if self.ai_available_local and self.classifier:
+             return self._semantic_verify_local(filename, text, detected_trigger)
+             
+        # Fallback (Si Local falla o no está disponible)
+        return detected_trigger
+
+    def _semantic_verify_local(self, filename: str, text: str, category: str) -> str:
+        """Inferencia CPU Local"""
+        snippet = text[:1000]
+        if category == "INVOICE":
+            labels = ["actual invoice with payment details", "educational document about invoicing", "software configuration"]
+            target_label = "actual invoice with payment details"
+        elif category == "HR_DATA":
+             labels = ["private employee personal data", "public hr policy", "resume template"]
+             target_label = "private employee personal data"
+        else:
+             return category
+
+        try:
+            result = self.classifier(snippet, labels)
+            top_label = result['labels'][0]
+            score = result['scores'][0]
+            
+            logger.info(f"🤖 Local AI Verdict: {top_label} ({score:.2f})")
+            
+            if top_label == target_label and score > 0.6:
+                return category
+                
+            return "GENERIC"
+        except Exception as e:
+            logger.error(f"Local AI Error: {e}")
+            return category # Fail Safe
 
     async def _semantic_verify_openai(self, filename: str, text: str, category: str) -> str:
-        """
-        Consulta a GPT-4o: ¿Es esto un documento real o solo ruido?
-        """
+        """Consulta a GPT-4o"""
         snippet = text[:2000]
         
         system_prompt = f"""
         You are a Data Loss Prevention (DLP) determination engine.
-        Analyze the provided document text.
-        Your goal: Determine if this document IS A REAL {category} containing sensitive data, or if it is SAFE (educational, definition, blank template, code).
-        
         Category to Detect: {category}
-        
         Rules:
         - If it looks like a real invoice/salary/report: RETURN "VIOLATION"
-        - If it is a policy document ABOUT invoices: RETURN "SAFE"
-        - If it is python/sql code: RETURN "SAFE"
-        
-        Respond ONLY with a JSON object: {{"verdict": "VIOLATION" | "SAFE", "confidence": 0.0-1.0, "reason": "short explanation"}}
+        - If it is a policy document or code: RETURN "SAFE"
+        Respond ONLY with JSON: {{"verdict": "VIOLATION" | "SAFE", "confidence": float, "reason": "string"}}
         """
         
         try:
@@ -176,26 +216,20 @@ class FileGuardian:
             content = response.choices[0].message.content
             result = json.loads(content)
             
-            logger.info(f"🤖 OpenAI Verdict for {filename}: {result['verdict']} ({result['reason']})")
+            logger.info(f"🤖 OpenAI Verdict: {result['verdict']} ({result['reason']})")
             
             if result['verdict'] == "VIOLATION":
                 return category
             
-            return "GENERIC" # Safe
+            return "GENERIC"
             
         except Exception as e:
             logger.error(f"OpenAI Verification Failed: {e}")
-            # Fallback a Fail-Closed (Bloquear si hay duda y el regex saltó) o Fail-Open?
-            # User favors accuracy, but if API fails, security first -> Block.
             return category
-            
-    # Legacy Local AI removed for GPT-4 preference
-    # def _semantic_verify(...)
 
-    async def _enforce_policy(self, tenant_id, dept_id, user_id, filename, category):
+    async def _enforce_policy(self, tenant_id, dept_id, user_id, filename, category, mode):
         """Aplica la lógica de bloqueo consultando la DB."""
         try:
-            # Traemos las reglas de bloqueo activas
             res = supabase.table("policies")\
                 .select("id, name, rules, mode, target_dept_id")\
                 .eq("tenant_id", tenant_id)\
@@ -206,7 +240,6 @@ class FileGuardian:
             policies = res.data or []
 
             for policy in policies:
-                # Filtro de Departamento
                 p_dept = policy.get('target_dept_id')
                 if p_dept and str(p_dept) != str(dept_id):
                     continue 
@@ -215,18 +248,18 @@ class FileGuardian:
                 
                 # REGLA 1: Contenido Semántico Prohibido
                 if category in rules.get('block_categories', []):
-                    reason = f"Contenido sensible detectado: {category} (Verificado por IA)"
-                    await self._audit_block(tenant_id, policy['id'], user_id, filename, category, reason)
+                    reason = f"Contenido sensible: {category}. Verificado por {mode} AI."
+                    await self._audit_block(tenant_id, policy['id'], user_id, filename, category, reason, mode)
                     
                     if policy.get('mode') == 'ENFORCE':
-                        raise HTTPException(403, f"⛔ Security Block: El archivo contiene {category} real. ({reason})")
+                        raise HTTPException(403, f"⛔ Security Block: {category} detectado ({mode} Mode).")
 
                 # REGLA 2: Extensión de Archivo
                 ext = filename.split('.')[-1].lower() if '.' in filename else ''
                 allowed = rules.get('allowed_extensions', [])
                 if allowed and ext not in allowed:
                     reason = f"Extensión .{ext} no permitida"
-                    await self._audit_block(tenant_id, policy['id'], user_id, filename, category, reason)
+                    await self._audit_block(tenant_id, policy['id'], user_id, filename, category, reason, mode)
                     if policy.get('mode') == 'ENFORCE':
                         raise HTTPException(403, f"⛔ Bloqueado: Tipo de archivo .{ext} no permitido.")
 
@@ -234,11 +267,10 @@ class FileGuardian:
             raise
         except Exception as e:
             logger.error(f"Error aplicando políticas: {e}")
-            # En caso de error de DB, bloquear por seguridad (Fail-Closed)
             raise HTTPException(500, "Error verificando políticas de seguridad.")
 
-    async def _audit_block(self, tenant_id, policy_id, user_id, filename, category, reason):
-        """Registra el evento en el log de auditoría inmutable."""
+    async def _audit_block(self, tenant_id, policy_id, user_id, filename, category, reason, mode):
+        """Registra el evento en el log de auditoría."""
         try:
             supabase.table("policy_events").insert({
                 "tenant_id": tenant_id,
@@ -250,7 +282,7 @@ class FileGuardian:
                     "filename": filename,
                     "category": category,
                     "reason": reason,
-                    "ai_verified": True if self.classifier else False
+                    "ai_mode": mode
                 },
                 "created_at": "now()"
             }).execute()

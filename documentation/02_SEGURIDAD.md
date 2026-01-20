@@ -81,10 +81,10 @@ Un empleado de Marketing sube "Nóminas_2025.pdf" para resumirlas con IA.
 ### La Solución: Gatekeeper Nativo
 Interceptamos el flujo en `POST /v1/files` antes de indexar nada.
 
-1.  **Hybrid Sniper Scan**: 
-    *   **Paso 1 (0ms)**: Regex detecta palabras clave ("Factura").
-    *   **Paso 2 (500ms)**: **OpenAI Verification**. Enviamos el snippet a GPT-4o para un veredicto definitivo: "¿Es esto sensible o simulado?". Cero Falsos Positivos garantizado.
-2.  **Vision Engine (OCR)**: Lee píxeles. Si subes una foto de una factura (JPG) o un PDF escaneado, Tesseract extrae el texto en el contenedor antes del análisis. Cierra la brecha analógica.
+1.  **Dual Brain Architecture (Configurable)**:
+    *   **Modo Soberano (Default)**: IA Local (DistilBART/CPU). Privacidad absoluta (los datos no salen).
+    *   **Modo Precisión (OpenAI)**: Verificación por GPT-4o. Cero falsos positivos. Activado por policy/tenant.
+2.  **Vision Engine (OCR)**: Lee píxeles (JPG/Scanned PDF) usando Tesseract en el contenedor.
 3.  **Anti-DoS (Size Limit)**: Lectura segura de solo los primeros 2KB (`_read_file_head`) para evitar saturación de RAM.
 3.  **Motor de Políticas Unified**: Reutilizamos la tabla `policies` con `action='BLOCK_UPLOAD'`.
     *   Ejemplo: `{"block_categories": ["INVOICE", "PAYSLIP"]}`
