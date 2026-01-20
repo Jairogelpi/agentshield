@@ -20,6 +20,20 @@ class SignupRequest(BaseModel):
     accept_tos: bool 
     tos_version_seen: str = "v1.0"
 
+# --- AUTH HELPERS FOR ONBOARDING ---
+security = HTTPBearer()
+
+async def get_user_id_from_jwt(credentials: HTTPAuthorizationCredentials = Security(security)):
+    """
+    Valida el token pero NO requiere tener un tenant asociado.
+    """
+    token = credentials.credentials
+    try:
+        user_response = supabase.auth.get_user(token)
+        return user_response.user.id
+    except Exception as e:
+        raise HTTPException(status_code=401, detail="Invalid Session")
+
 @router.post("/v1/signup")
 async def signup_tenant(req: SignupRequest, authenticated_user_id: str = Depends(get_user_id_from_jwt)):
     # 1. Seguridad: Forzar que el target sea el del JWT
@@ -113,19 +127,6 @@ async def signup_tenant(req: SignupRequest, authenticated_user_id: str = Depends
         # Enviamos el detalle para que el frontend pueda mostrarlo
         raise HTTPException(status_code=500, detail=f"Database Alignment Error: {str(e)}")
 
-# --- AUTH HELPERS FOR ONBOARDING ---
-security = HTTPBearer()
-
-async def get_user_id_from_jwt(credentials: HTTPAuthorizationCredentials = Security(security)):
-    """
-    Valida el token pero NO requiere tener un tenant asociado.
-    """
-    token = credentials.credentials
-    try:
-        user_response = supabase.auth.get_user(token)
-        return user_response.user.id
-    except Exception as e:
-        raise HTTPException(status_code=401, detail="Invalid Session")
 
 @router.get("/v1/onboarding/organizations")
 async def list_my_organizations(user_id: str = Depends(get_user_id_from_jwt)):
