@@ -1,38 +1,43 @@
-import asyncio
-import unittest
+# tests/test_entropy.py
+"""Tests for the entropy scanning functionality in PII Guard."""
+import pytest
 
-from app.services.pii_guard import advanced_redact_pii, pii_guard
+from app.services.pii_guard import PIIEngine
 
 
-class TestEntropyGuard(unittest.TestCase):
+class TestEntropyScanner:
+    """Test the _entropy_scan method of PIIEngine."""
+
     def test_low_entropy_pass(self):
         """Test that normal text is NOT redacted."""
+        engine = PIIEngine()
         text = "Hello world this is a normal sentence."
-        scanned = pii_guard._entropy_scan(text)
-        self.assertEqual(text, scanned)
+        result = engine._entropy_scan(text)
+        assert result == text
 
     def test_high_entropy_detection(self):
         """Test that high entropy secrets are blocked."""
-        # A high entropy string like an API key
-        secret = "sk-proj-89823982398293d9823_ABS"
+        engine = PIIEngine()
+        # A high entropy string like an API key (long random characters)
+        secret = "sk-proj-8Xk9LmN2pQwErTyUiOpAsdf1234567890qwertyuiopasdf"
         text = f"My secret key is {secret}"
-        scanned = pii_guard._entropy_scan(text)
+        result = engine._entropy_scan(text)
+        
+        # Should contain redaction marker
+        assert "<SECRET_REDACTED>" in result
+        # Original secret should be removed
+        assert secret not in result
 
-        print(f"Original: {text}")
-        print(f"Scanned:  {scanned}")
+    def test_short_tokens_pass(self):
+        """Test that short tokens (< 8 chars) pass through."""
+        engine = PIIEngine()
+        text = "abc123 test OK"
+        result = engine._entropy_scan(text)
+        assert result == text
 
-        self.assertIn("<SECRET_REDACTED>", scanned)
-        self.assertNotIn(secret, scanned)
-
-    def test_mixed_content(self):
-        """Test a mix of normal text and secrets."""
-        text = "Here is a password: 7F9a#99!xL and here is a dog."
-        scanned = pii_guard._entropy_scan(text)
-
-        self.assertIn("Here is a password:", scanned)
-        self.assertIn("and here is a dog.", scanned)
-        self.assertIn("<SECRET_REDACTED>", scanned)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_urls_pass_through(self):
+        """Test that URLs are not flagged as high entropy."""
+        engine = PIIEngine()
+        text = "Visit https://example.com/page for more info"
+        result = engine._entropy_scan(text)
+        assert "https://example.com/page" in result

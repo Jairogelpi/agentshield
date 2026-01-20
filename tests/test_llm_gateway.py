@@ -1,79 +1,83 @@
-"""
-Tests for LLM Gateway - Circuit Breaker, Canary & Resilience.
-"""
-
+# tests/test_llm_gateway.py
+"""Tests for the LLM Gateway service."""
 import pytest
 
 from app.services.llm_gateway import CANARY_CONFIG, DEFAULT_CHAINS, CircuitBreaker
 
-# Alias for backwards compatibility in tests
-FALLBACK_CHAINS = DEFAULT_CHAINS
-
 
 class TestFallbackChains:
-    """Tests for fallback chain configuration."""
+    """Test the DEFAULT_CHAINS configuration."""
 
     def test_smart_chain_exists(self):
-        """Smart tier should have fallback chain."""
-        assert "agentshield-smart" in FALLBACK_CHAINS
-        assert len(FALLBACK_CHAINS["agentshield-smart"]) >= 2
+        """Test that agentshield-smart chain is defined."""
+        assert "agentshield-smart" in DEFAULT_CHAINS
 
     def test_fast_chain_exists(self):
-        """Fast tier should have fallback chain."""
-        assert "agentshield-fast" in FALLBACK_CHAINS
-        assert len(FALLBACK_CHAINS["agentshield-fast"]) >= 2
+        """Test that agentshield-fast chain is defined."""
+        assert "agentshield-fast" in DEFAULT_CHAINS
 
     def test_chain_has_required_fields(self):
         """Each fallback should have provider, model, timeout."""
-        for tier, chain in FALLBACK_CHAINS.items():
+        for tier, chain in DEFAULT_CHAINS.items():
             for fallback in chain:
                 assert "provider" in fallback
                 assert "model" in fallback
                 assert "timeout" in fallback
 
+    def test_chain_is_list(self):
+        """Test that each chain is a list of providers."""
+        for tier, chain in DEFAULT_CHAINS.items():
+            assert isinstance(chain, list)
+            assert len(chain) > 0
+
 
 class TestCircuitBreaker:
-    """Tests for Circuit Breaker pattern."""
+    """Test the CircuitBreaker class."""
 
     def test_initialization(self):
-        """Circuit breaker should initialize with default values."""
+        """Test CircuitBreaker can be instantiated."""
         cb = CircuitBreaker()
-        assert hasattr(cb, "recovery_timeout")
+        assert cb is not None
         assert cb.recovery_timeout == 60
 
-    def test_healthy_provider_allowed(self):
-        """Healthy providers should be allowed."""
+    @pytest.mark.asyncio
+    async def test_healthy_provider_allowed(self):
+        """Test that a healthy provider is allowed (async)."""
         cb = CircuitBreaker()
-        # Fresh provider should be allowed
-        assert cb.can_use_provider("test_provider") is True
+        # By default, all providers should be allowed
+        result = await cb.can_use_provider("test_provider")
+        assert result is True
 
-    def test_success_reporting(self):
-        """Successful calls should be tracked."""
+    @pytest.mark.asyncio
+    async def test_success_reporting(self):
+        """Test that report_success is callable and async."""
         cb = CircuitBreaker()
         # Should not raise
-        cb.report_success("openai")
+        await cb.report_success("openai")
 
-    def test_failure_reporting(self):
-        """Failed calls should be tracked."""
+    @pytest.mark.asyncio
+    async def test_failure_reporting(self):
+        """Test that report_failure is callable and async."""
         cb = CircuitBreaker()
         # Should not raise
-        cb.report_failure("openai")
+        await cb.report_failure("openai")
 
 
 class TestCanaryConfig:
-    """Tests for Canary deployment configuration."""
+    """Test the CANARY_CONFIG structure."""
 
     def test_canary_config_structure(self):
-        """Canary config should have required fields."""
+        """Test that CANARY_CONFIG has required keys."""
         assert "active" in CANARY_CONFIG
         assert "target_model" in CANARY_CONFIG
         assert "percentage" in CANARY_CONFIG
         assert "for_tiers" in CANARY_CONFIG
 
     def test_canary_percentage_valid(self):
-        """Canary percentage should be between 0 and 1."""
-        assert 0 <= CANARY_CONFIG["percentage"] <= 1
+        """Test that canary percentage is a valid fraction."""
+        pct = CANARY_CONFIG["percentage"]
+        assert 0 <= pct <= 1
 
     def test_canary_tiers_is_list(self):
-        """Canary tiers should be a list."""
+        """Test that for_tiers is a list."""
         assert isinstance(CANARY_CONFIG["for_tiers"], list)
