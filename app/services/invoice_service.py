@@ -9,7 +9,7 @@ logger = logging.getLogger("agentshield.invoice")
 async def compute_invoice(tenant_id: str, cost_center_id: str, month_str: str) -> Dict[str, Any]:
     """
     Agrega recibos, eventos de ledger y métricas de carbono para un mes dado.
-    month_str format: "YYYY-MM"
+    PROHIBIDO EL USO DE DATOS MOCK (Tenant Name, Credits, etc.)
     """
     try:
         # Calcular rango de fechas
@@ -20,7 +20,14 @@ async def compute_invoice(tenant_id: str, cost_center_id: str, month_str: str) -
         else:
             end_date = f"{year}-{month+1:02d}-01"
 
-        # 1. Obtener Totales de Recibos (Compute Spend)
+        # 1. Obtener Datos Maestros (REAL-TIME DB)
+        tenant_res = supabase.table("tenants").select("name").eq("id", tenant_id).maybe_single().execute()
+        tenant_name = tenant_res.data.get("name", "Unknown Corp") if tenant_res.data else "Unknown Corp"
+
+        dept_res = supabase.table("departments").select("name").eq("id", cost_center_id).maybe_single().execute()
+        dept_name = dept_res.data.get("name", f"CC {cost_center_id[:8]}") if dept_res.data else "Generic CC"
+
+        # 2. Obtener Totales de Recibos (Compute Spend)
         receipts_query = supabase.table("receipts")\
             .select("*")\
             .eq("tenant_id", tenant_id)\
@@ -36,25 +43,32 @@ async def compute_invoice(tenant_id: str, cost_center_id: str, month_str: str) -
         savings_usd = sum(float(r.get('savings_usd', 0) or 0) for r in receipts)
         
         requests_count = len(receipts)
-        tokens_count = sum((r.get('content_json') or {}).get('tokens', {}).get('total', 0) for r in receipts)
+        tokens_count = sum(int(r.get('tokens', 0) or 0) for r in receipts)
 
-        # 2. Ingresos por Conocimiento (Knowledge Credits via Ledger)
-        knowledge_credits_usd = 0.0 # Placeholder para integración con internal_ledger
+        # 3. Ingresos por Conocimiento (Real aggregation from internal_ledger)
+        # Consultamos créditos liquidados para este cost_center en este periodo
+        ledger_query = supabase.table("ledger_settlements")\
+            .select("amount_usd")\
+            .eq("receiver_cost_center_id", cost_center_id)\
+            .gte("created_at", start_date).lt("created_at", end_date)\
+            .execute()
+        
+        knowledge_credits_usd = sum(float(l.get("amount_usd", 0)) for l in (ledger_query.data or []))
 
-        # 3. Carbono
+        # 4. Carbono (Agregado Real)
         co2_gross = sum(float(r.get('co2_gross_g', 0) or 0) for r in receipts)
         co2_actual = sum(float(r.get('co2_actual_g', 0) or 0) for r in receipts)
         co2_saved = max(0, co2_gross - co2_actual)
 
-        # 4. Datos de Auditoría
+        # 5. Datos de Auditoría
         sample_receipts = [r['id'] for r in receipts[:5]]
-        policy_hash = receipts[0].get('content_json', {}).get('policy_version_hash', "N/A") if receipts else "N/A"
+        policy_hash = receipts[0].get('full_receipt', {}).get('governance', {}).get('policy_version_hash', "N/A") if receipts else "N/A"
 
         return {
             "invoice_id": f"INV-{year}{month:02d}-{cost_center_id[:8].upper()}",
             "period": month_str,
-            "tenant_name": "Verified Tenant",
-            "dept_name": f"Cost Center {cost_center_id}",
+            "tenant_name": tenant_name,
+            "dept_name": dept_name,
             "cost_center_id": cost_center_id,
             "totals": {
                 "gross_usd": round(gross_usd, 4),
@@ -71,7 +85,8 @@ async def compute_invoice(tenant_id: str, cost_center_id: str, month_str: str) -
                 "saved_g": round(co2_saved, 2)
             },
             "line_items": [
-                {"desc": "AI Model Compute (Optimized Cluster)", "qty": f"{requests_count} req", "total_usd": round(actual_usd, 4)},
+                {"desc": f"AI Compute Cluster - {dept_name}", "qty": f"{requests_count} calls", "total_usd": round(actual_usd, 4)},
+                {"desc": "Knowledge Contribution Royalty", "qty": "credits", "total_usd": -round(knowledge_credits_usd, 4)} if knowledge_credits_usd > 0 else None
             ],
             "audit": {
                 "policy_hash": policy_hash,

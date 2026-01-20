@@ -45,34 +45,37 @@ async def verify_identity_envelope(credentials: HTTPAuthorizationCredentials = S
             res = supabase.table("users").select("*").eq("id", user_id).single().execute()
             
             if not res.data:
-                # Si no está en users, quizás es un token válido pero usuario no onboarded en nuestra tabla publica
-                # Intentamos sacar info parcial del token
-                 tenant_id = app_metadata.get("tenant_id")
-                 if not tenant_id:
-                     raise HTTPException(403, "User has no associated Tenant (Organization)")
-                 
-                 profile = {
-                     "email": email,
-                     "department_id": "default", # Default Cost Center
-                     "tenant_id": tenant_id,
-                     "role": app_metadata.get("role", "member")
-                 }
-                 # Auto-heal? No, solo lectura segura.
+                # Si no está en users, buscamos en el Tenant para ver sus políticas base
+                tenant_id = app_metadata.get("tenant_id")
+                if not tenant_id:
+                    raise HTTPException(403, "User has no associated Tenant (Organization)")
+                
+                # Buscamos el departamento principal del Tenant para no usar mocks
+                dept_res = supabase.table("departments").select("id").eq("tenant_id", tenant_id).limit(1).execute()
+                dept_id = dept_res.data[0]['id'] if dept_res.data else "none"
+
+                profile = {
+                    "email": email,
+                    "department_id": dept_id,
+                    "tenant_id": tenant_id,
+                    "role": app_metadata.get("role", "member")
+                }
             else:
                 profile = res.data
-                # Asegurar campos minimos
+                # Asegurar campos minimos SIN MOCKS
                 if "department_id" not in profile or not profile["department_id"]:
-                     profile["department_id"] = "default"
+                     # Lookup dinámico si el perfil está incompleto
+                     dept_res = supabase.table("departments").select("id").eq("tenant_id", profile["tenant_id"]).limit(1).execute()
+                     profile["department_id"] = dept_res.data[0]['id'] if dept_res.data else "none"
+                
                 if "tenant_id" not in profile:
-                     profile["tenant_id"] = app_metadata.get("tenant_id") # Trust token if DB missing
+                     profile["tenant_id"] = app_metadata.get("tenant_id")
                 if "role" not in profile:
                      profile["role"] = app_metadata.get("role", "member")
 
-            # Cacheamos la identidad por 5 minutos
+            # Cacheamos la identidad por 5 minutos (Sincronización a tiempo real)
             await redis_client.setex(f"identity:{user_id}", 300, json.dumps(profile))
 
-        # logger.info(f"🆔 Verified: {profile.get('email')} (Tenant: {profile.get('tenant_id')})")
-        
         return VerifiedIdentity(
             user_id=user_id,
             email=profile.get('email'),
