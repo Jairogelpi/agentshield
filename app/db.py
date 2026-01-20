@@ -19,14 +19,46 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 REDIS_URL = os.getenv("REDIS_URL")
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-redis_client = redis.from_url(
-    REDIS_URL,
-    decode_responses=True,
-    socket_timeout=5.0,
-    socket_connect_timeout=5.0,
-    retry_on_timeout=True,
-)
+# Lazy-loaded clients (don't create at import time for tests)
+_supabase_client: Client | None = None
+_redis_client = None
+
+
+def get_supabase() -> Client:
+    """Lazy-load Supabase client."""
+    global _supabase_client
+    if _supabase_client is None:
+        _supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    return _supabase_client
+
+
+def get_redis():
+    """Lazy-load Redis client."""
+    global _redis_client
+    if _redis_client is None:
+        _redis_client = redis.from_url(
+            REDIS_URL or "redis://localhost:6379",
+            decode_responses=True,
+            socket_timeout=5.0,
+            socket_connect_timeout=5.0,
+            retry_on_timeout=True,
+        )
+    return _redis_client
+
+
+# Backwards-compatible aliases (lazy proxies)
+class _LazyClient:
+    """Proxy that lazily calls get_* functions."""
+
+    def __init__(self, getter):
+        self._getter = getter
+
+    def __getattr__(self, name):
+        return getattr(self._getter(), name)
+
+
+supabase = _LazyClient(get_supabase)
+redis_client = _LazyClient(get_redis)
 
 # Nombre de la cola de seguridad (WAL)
 WAL_QUEUE_KEY = "wal:pending_charges"
