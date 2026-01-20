@@ -21,7 +21,6 @@ async def get_tenant_config(request: Request, domain: str = None):
         domain = host.split(":")[0] 
         
     try:
-    try:
         # 1. Check Redis Cache (Critical for performance)
         cache_key = f"tenant_config:{domain}"
         cached = await redis_client.get(cache_key)
