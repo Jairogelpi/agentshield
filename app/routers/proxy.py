@@ -9,6 +9,7 @@ from app.services.semantic_router import semantic_router
 from app.services.trust_system import trust_system
 from app.services.pii_guard import pii_guard
 from app.services.carbon import carbon_governor
+from app.limiter import limiter
 from app.services.llm_gateway import execute_with_resilience
 from app.services.receipt_manager import receipt_manager
 from app.services.event_bus import event_bus
@@ -118,17 +119,45 @@ async def universal_proxy(
         )
 
     # ==============================================================================
-    # 5. CARBON GATE (Green Routing)
+    # 5. ARBITRAGE GATE (Financial Engine) - [NEW APPLIANCE LOGIC]
+    # ==============================================================================
+    # Si el usuario pide "agentshield-smart", quiere GPT-4/Opus garantizado (Zero Risk).
+    # Si pide "agentshield-fast", quiere Arbitraje Agresivo (Max Savings).
+    
+    if "agentshield-smart" in ctx.requested_model:
+        # MODO SMART: Bypass de Arbitraje, vamos directo a modelo top
+        # Asumimos que 'agentshield-smart' mapea a GPT-4o en el router
+        ctx.effective_model = "gpt-4o" 
+        ctx.log("MODE", "Smart Mode Active: Arbitrage Skipped")
+        
+    elif "agentshield-fast" in ctx.requested_model or ctx.requested_model == "agentshield-fast":
+        # MODO FAST: Forzamos chequeo de Arbitraje
+        # Si no lo ha hecho ya el Trust Engine...
+        from app.services.arbitrage import arbitrage_engine
+        
+        # 1. Complexity Check
+        analysis = await arbitrage_engine.analyze_complexity(messages)
+        
+        # 2. Find Deal
+        winner_id, reason, savings = await arbitrage_engine.find_best_bidder("gpt-4o-mini", analysis) # Fast baseline
+        
+        if savings > 0 and winner_id:
+            ctx.effective_model = winner_id
+            ctx.log("ARBITRAGE", f"Fast Mode optimized to {winner_id} ({savings*100:.0f}% savings)")
+
+    # ==============================================================================
+    # 5.5 CARBON GATE (Green Routing)
     # ==============================================================================
     # Solo aplicamos si el motor de riesgo no ha degradado ya el modelo
     if ctx.effective_model == ctx.requested_model:
         ctx = await carbon_governor.check_budget_and_route(ctx)
 
     # ==============================================================================
-    # 5.5 BUDGET GATE (Velocity & Balance)
+    # 5.6 BUDGET GATE (Velocity & Balance)
     # ==============================================================================
     can_spend, limit_msg = await limiter.check_velocity_and_budget(identity)
     if not can_spend:
+        # Event Bus logic remains same...
         background_tasks.add_task(
             event_bus.publish,
             ctx.tenant_id,

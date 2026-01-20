@@ -67,3 +67,23 @@ En las líneas 170-200 de `main.py`:
 | **Hybrid Auth** | Sirve a humanos y robots con una sola API. | Código de validación más complejo (`verify_api_key` tiene 60 líneas). |
 | **PII Local (CPU)** | Cero fugas de datos. Cumplimiento legal total. | Consume ~300MB RAM. Reduce la concurrencia máxima por servidor. |
 | **Hashing de Keys** | Si nos hackean la DB, estamos seguros. | No podemos mostrarle al usuario su llave "perdida", tiene que regenerarla. |
+
+---
+
+## 6. FileGuardian: Protección de Archivos (`app/services/file_guardian.py`)
+AgentShield extiende su seguridad a los archivos RAG (Uploads), no solo al chat.
+
+### El Problema
+Un empleado de Marketing sube "Nóminas_2025.pdf" para resumirlas con IA.
+*   **Riesgo 1**: Fuga de datos salariales al modelo de IA.
+*   **Riesgo 2**: Ingesta de datos sensibles en el Knowledge Base corporativo (RAG Poisoning).
+
+### La Solución: Gatekeeper Nativo
+Interceptamos el flujo en `POST /v1/files` antes de indexar nada.
+
+1.  **Detección de Intención**: Analizamos el archivo (Nombre, tipo, contenido inicial).
+2.  **Motor de Políticas Unified**: Reutilizamos la tabla `policies` con `action='BLOCK_UPLOAD'`.
+    *   Ejemplo: `{"block_categories": ["INVOICE", "PAYSLIP"]}`
+3.  **Auditoría**: Cada bloqueo se registra en `policy_events` junto con los bloqueos de prompts, unificando la visión de seguridad.
+
+**Resultado**: "Marketing" nunca podrá subir archivos financieros, aunque la UI lo permita. El bloqueo es a nivel de API/Infraestructura.

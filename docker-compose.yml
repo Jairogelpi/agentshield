@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  # 1. THE BRAIN (AgentShield Core)
+  agentshield:
+    build: .
+    container_name: agentshield_core
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/agentshield
+      - REDIS_URL=redis://redis:6379/0
+      - OPENAI_API_KEY=${OPENAI_API_KEY} # Real OpenAI Key used by the brain
+      - DEFAULT_MODELS=agentshield-fast,agentshield-smart
+      - FORCE_ZEROTRUST=true
+    depends_on:
+      - db
+      - redis
+    networks:
+      - internal_brain_net
+    ports:
+      - "8000:8000" # Expose for debugging, but OpenWebUI talks internally
+
+  # 2. THE FACE (OpenWebUI)
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open_webui
+    restart: always
+    environment:
+      - OPENAI_API_BASE_URL=http://agentshield:8000/v1
+      - OPENAI_API_KEY=sk-agentshield-master # Virtual Key validated by AgentShield
+      - WEBUI_AUTH=true
+      - SHOW_ADMIN_DETAILS=false # White-labeling
+      - DEFAULT_MODELS=agentshield-fast
+    ports:
+      - "3000:8080"
+    volumes:
+      - open-webui-data:/app/backend/data
+    depends_on:
+      - agentshield
+    networks:
+      - internal_brain_net
+
+  # 3. MEMORY (Redis)
+  redis:
+    image: redis:alpine
+    container_name: agentshield_redis
+    restart: always
+    networks:
+      - internal_brain_net
+
+  # 4. STORAGE (PostgreSQL)
+  db:
+    image: postgres:15-alpine
+    container_name: agentshield_db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: agentshield
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - internal_brain_net
+
+networks:
+  internal_brain_net:
+    driver: bridge
+
+volumes:
+  open-webui-data:
+  postgres-data:

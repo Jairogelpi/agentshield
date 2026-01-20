@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from app.db import supabase, redis_client
 import json
 import logging
@@ -8,11 +8,19 @@ logger = logging.getLogger("agentshield.public")
 router = APIRouter(tags=["Public Config"])
 
 @router.get("/v1/public/tenant-config")
-async def get_tenant_config(domain: str):
+async def get_tenant_config(request: Request, domain: str = None):
     """
     Endpoint PÚBLICO (sin auth) que devuelve solo datos de marca.
     Usa caché agresivo porque esto se llama en cada carga de página.
     """
+    # ZERO-TOUCH: Si no envían 'domain' explícito, usamos el Host header.
+    # Esto permite que 'chat.cliente.com' funcione sin configuración.
+    if not domain:
+        host = request.headers.get("host", "")
+        # Limpiar puerto si existe (ej: localhost:3000 -> localhost)
+        domain = host.split(":")[0] 
+        
+    try:
     try:
         # 1. Check Redis Cache (Critical for performance)
         cache_key = f"tenant_config:{domain}"

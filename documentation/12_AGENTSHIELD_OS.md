@@ -148,18 +148,32 @@ En una auditoría legal en 2028, ¿cómo demuestras que la regla de privacidad e
 La experiencia final del cliente: `chat.cocacola.com` con sus colores, sin rastro de AgentShield.
 
 ### Arquitectura
-### Arquitectura de Resolución
-Soportamos dos modos de despliegue para el cliente:
+### C. Custom Policy Copilot (Natural Language Rules)
+*   **Concept:** "Policy-as-Code" for non-technical users.
+*   **Implementation:** `app/services/policy_copilot.py` & `custom_pii_rules` Table.
+*   **Mechanism:** Uses an AI agent to translate natural language ("Block project codes like PRJ-1234") into high-performance Regex, which is then hot-loaded by the PII Guard.
 
-1.  **Modo Gestionado (Managed Subdomain) - Zero Effort**: 
-    - El Admin crea el tenant con el slug `cocacola`.
-    - La URL es inmediatamente `cocacola.agentshield.com`.
-    - **El cliente no hace nada.**
-2.  **Modo Custom (Custom Domain)**: 
-    - El cliente configura un CNAME de `chat.cocacola.com` a `app.agentshield.com`.
-    - Se mapea en AgentShield como dominio exclusivo.
+---
 
-**Implementación**: `app/routers/public_config.py` y `scripts/seed_whitelabel.sql`.
+## 8. White-Label & Domain Resolution (Zero Install) 🏳️
+La experiencia final del cliente: `chat.cocacola.com` con sus colores, sin rastro de AgentShield.
+
+### Arquitectura Zero-Touch
+Hemos eliminado la necesidad de configuración manual o despliegue por tenant.
+
+1.  **Backend (Public Config)**:
+    *   **Implementación**: `app/routers/public_config.py`
+    *   **Mecanismo**: El endpoint `/v1/public/tenant-config` intercepta el header `Host` de la petición HTTP. Busca en la tabla `tenants.custom_domain` y devuelve el JSON de marca (logo, colores) en milisegundos.
+
+2.  **Frontend (Theme Injection)**:
+    *   **Implementación**: `TenantProvider.tsx`
+    *   **Mecanismo**: Al cargar la SPA, consulta al backend "¿Quién soy?". Recibe la configuración e inyecta variables CSS (`--primary`, `--radius`) en el DOM antes de pintar la UI.
+
+3.  **Cross-Origin (CORS)**:
+    *   **Implementación**: `app/main.py`
+    *   **Mecanismo**: Middleware configurado dinámicamente para aceptar orígenes arbitrarios (`*` o whitelist dinámica) permitiendo que cualquier CNAME del cliente conecte con tu infraestructura central.
+
+**Resultado**: Transformación de "Software Instalable" a "Plataforma Gestionada". El cliente solo configura un DNS CNAME.
 
 ---
 
@@ -190,6 +204,14 @@ AgentShield transforma la IA de un "coste central" a un modelo de "pago por uso 
 - **Gross vs Net Audit**: Cada transacción registra el coste del modelo original pedido y el ahorro generado por AgentShield.
 - **Monthly Chargeback PDF**: Facturas profesionales generadas automáticamente para cada centro de coste.
 - **Knowledge Royalties**: Los departamentos que aportan conocimiento (RAG/Docs) pueden recibir créditos que compensan su gasto.
+
+---
+
+## 14. FileGuardian (DLP para RAG) 🔒
+Evita que documentos tóxicos (Nóminas, Secretos, Contratos sin firmar) entren en tu memoria corporativa.
+- **Unified Policy Engine**: Usa las mismas tablas que las reglas de chat.
+- **Categorization**: Bloqueo por tipo de contenido (semántico), no solo extensión.
+- **Audit**: Registro centralizado de intentos de subida bloqueados.
 
 ---
 **AgentShield OS: El Soberano de la IA Empresarial.**

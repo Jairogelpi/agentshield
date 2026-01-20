@@ -39,6 +39,37 @@ pub fn scrub_pii_fast(text: &str) -> String {
     clean
 }
 
+/// Detects high entropy strings (potential secrets) in Rust.
+/// Shannon Entropy > 4.5 is suspicious.
+#[pyfunction]
+pub fn scan_entropy_fast(text: &str) -> Vec<String> {
+    let mut secrets = Vec::new();
+    
+    for token in text.split_whitespace() {
+        if token.len() < 8 { continue; }
+        
+        let mut entropy = 0.0;
+        let len = token.len() as f64;
+        
+        // Count char frequencies
+        let mut counts = std::collections::HashMap::new();
+        for c in token.chars() {
+            *counts.entry(c).or_insert(0) += 1;
+        }
+        
+        for &count in counts.values() {
+            let p = count as f64 / len;
+            entropy -= p * p.log2();
+        }
+        
+        // Threshold 4.5
+        if entropy > 4.5 {
+             secrets.push(token.to_string());
+        }
+    }
+    secrets
+}
+
 // --- 2. ZERO-COPY IMAGE SIGNING (C2PA - Manual Binary Injection) ---
 #[pyfunction]
 pub fn sign_c2pa_image_fast(

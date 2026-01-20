@@ -74,6 +74,15 @@ async def upload_file(
     Ingesta segura de archivos PDF/TXT desde la UI (AgentShield Vault).
     """
     try:
+        # 0. FileGuardian Inspection (Block Sensitive Content)
+        from app.services.file_guardian import file_guardian
+        await file_guardian.inspect_and_filter(
+            file=file, 
+            user_id=identity.user_id, 
+            tenant_id=identity.tenant_id, 
+            dept_id=getattr(identity, 'dept_id', None) # Asumimos que VerifiedIdentity pronto tendrá dept_id
+        )
+
         content = await file.read()
         # Simple decode, for PDFs use pypdf or similar in real impl
         # Assuming text files for this MVP step
@@ -87,6 +96,8 @@ async def upload_file(
         )
         
         return {"id": str(doc_id), "status": "securely_indexed", "filename": file.filename}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"File upload failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))

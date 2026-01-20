@@ -235,48 +235,27 @@ async def security_guard(request: Request, call_next):
     return response
 
 # 1. Configuración CORS (Production Ready)
-# Leemos de variable de entorno. Ejemplo: "https://app.agentshield.io,https://admin.agentshield.io"
-allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
-origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
-
-# Si estamos en modo, podemos permitir localhost por defecto si no se especificó nada
-if not origins:
-    # Default restrictivo o log de advertencia
-    logger.warning("WARNING: No ALLOWED_ORIGINS set. CORS policy is empty effectively.")
-
+# [MODIFIED] Multi-Tenant SaaS Mode: Allow any origin to support dynamic domains
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"], # Permite chat.cocacola.com, chat.pepsi.com, etc.
     allow_credentials=True,
-    allow_methods=["*"],    # Permitir GET, POST, PUT, OPTIONS
-    allow_headers=["*"],    # Permitir headers como X-API-Key
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # 1.5. Security Headers (Trusted Host)
-# En producción, esto evita ataques de Host Header Injection
+# [MODIFIED] Multi-Tenant SaaS Mode: Allow any host header
 app.add_middleware(
     TrustedHostMiddleware, 
-    allowed_hosts=[
-        "api.getagentshield.com",       # ✅ API Subdomain
-        "dashboard.getagentshield.com", # ✅ Dashboard Subdomain
-        "getagentshield.com",           # ✅ Tu dominio real
-        "www.getagentshield.com",       # ✅ Tu subdominio
-        "localhost",                    # ✅ Desarrollo
-        "127.0.0.1"                     # ✅ Desarrollo
-    ]
-    # Eliminamos "agentshield.onrender.com" para forzar que entren por Cloudflare
+    allowed_hosts=["*"] # Multi-tenant requires accepting dynamic CNAMEs
 )
 
-# 1.8. Compression (Performance)
-# ELIMINADO: Cloudflare gestiona Gzip/Brotli en el Edge.
-# Hacerlo en Python es gastar CPU innecesariamente.
-# app.add_middleware(GZipMiddleware, minimum_size=500)
-
 # 2. Conectar Routers
-from app.routers import proxy, dashboard, authorize, onboarding, compliance, analytics, audit, receipt
-from app.routers import proxy, dashboard, authorize, onboarding, compliance, analytics, audit, receipt, embeddings, feedback
-from app.routers import admin_chat, tools, images, forensics
+from app.routers import proxy, dashboard, authorize, onboarding, compliance, analytics, audit, receipt, embeddings, feedback, public_config
+from app.routers import admin_chat, tools, images, forensics, trust
 
+app.include_router(public_config.router) # [NEW] Zero-Touch Config
 app.include_router(authorize.router)
 app.include_router(receipt.router)
 app.include_router(dashboard.router)
@@ -290,11 +269,9 @@ app.include_router(embeddings.router)
 app.include_router(feedback.router)
 app.include_router(admin_chat.router)
 app.include_router(tools.router) 
-app.include_router(images.router) # 🎨 DALL-E
-app.include_router(forensics.router) # 🕵️ CSI Mode
-from app.routers import trust
+app.include_router(images.router)
+app.include_router(forensics.router)
 app.include_router(trust.router)
-# app.include_router(feedback.router) # 🧠 Learning Loop
 
 # Endpoint de salud para Render (ping)
 # Endpoint de salud para Render (Deep Health Check)

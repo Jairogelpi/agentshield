@@ -1,5 +1,5 @@
 # agentshield_core/app/routers/dashboard.py
-from fastapi import APIRouter, Depends, HTTPException, Header, Query
+from fastapi import APIRouter, Depends, HTTPException, Header, Query, Body
 from typing import Optional, List, Dict, Any
 from app.db import supabase, redis_client
 from app.routers.authorize import get_tenant_from_jwt as get_current_tenant_id
@@ -17,6 +17,30 @@ from opentelemetry import trace
 tracer = trace.get_tracer(__name__)
 
 router = APIRouter(prefix="/v1/dashboard", tags=["Dashboard"])
+
+from app.services.policy_copilot import generate_custom_pii_rule
+
+# --- CUSTOM PII ENDPOINTS ---
+@router.post("/policies/copilot/generate-pii")
+async def draft_custom_pii(prompt: str = Body(..., embed=True), tenant_id: str = Depends(get_current_tenant_id)):
+    """User asks: 'Block projects', Agent answers: regex"""
+    result = await generate_custom_pii_rule(prompt)
+    return result
+
+@router.get("/policies/custom-pii")
+async def list_custom_pii(tenant_id: str = Depends(get_current_tenant_id)):
+    res = supabase.table("custom_pii_rules").select("*").eq("tenant_id", tenant_id).eq("is_active", True).execute()
+    return res.data
+
+@router.post("/policies/custom-pii")
+async def create_custom_pii(rule: Dict[str, Any], tenant_id: str = Depends(get_current_tenant_id)):
+    """Save the approved regex"""
+    rule['tenant_id'] = tenant_id
+    supabase.table("custom_pii_rules").insert(rule).execute()
+    # Invalidate cache
+    await redis_client.delete(f"pii:custom:{tenant_id}")
+    return {"status": "created"}
+# ----------------------------
 
 # Helper rápido para política
 async def get_policy_rules(tenant_id: str):

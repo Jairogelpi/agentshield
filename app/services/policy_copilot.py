@@ -90,3 +90,39 @@ async def generate_policy_json(tenant_id: str, user_prompt: str) -> Dict:
             "details": str(e),
             "explanation": "Lo siento, hubo un error procesando tu solicitud. Por favor intenta ser más específico."
         }
+
+async def generate_custom_pii_rule(user_prompt: str) -> Dict:
+    """
+    Genera una regla Regex a partir de una descripción natural.
+    """
+    system_prompt = """
+    You are a PII Security Expert & Regex compiler.
+    Your job is to convert a user description of sensitive data into a SAFE, HIGH-PERFORMANCE Python Regex.
+    
+    OUTPUT JSON FORMAT:
+    {
+        "regex_pattern": "r'...' ",
+        "risk_score": 0-100,
+        "explanation": "Brief explanation of what this matches",
+        "action_recommendation": "REDACT" | "BLOCK"
+    }
+    
+    RULES:
+    1. Regex must be compatible with Python 're' module.
+    2. Avoid catastrophic backtracking (be specific).
+    3. If user asks to block 'everything' or 'bad words', provide a generic safe list or refuse politely in explanation.
+    """
+    
+    try:
+        response = completion(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            response_format={ "type": "json_object" }
+        )
+        return json.loads(response.choices[0].message.content)
+    except Exception as e:
+        logger.error(f"Regex Gen Failed: {e}")
+        return {"error": str(e)}
