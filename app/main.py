@@ -145,8 +145,8 @@ async def lifespan(app: FastAPI):
         logger.critical(f"Failed to start Recovery Worker: {e}")
         
         
-    # 2. Inicializar Cache Vectorial
-    await init_semantic_cache_index()
+    # 2. Inicializar Cache Vectorial (No bloqueante)
+    asyncio.create_task(init_semantic_cache_index())
 
     # 3. Iniciar Oráculo de Mercado (Async) - Obtiene precios "frescos"
     asyncio.create_task(update_market_rules())

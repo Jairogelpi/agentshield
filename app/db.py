@@ -19,7 +19,13 @@ SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 REDIS_URL = os.getenv("REDIS_URL")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+redis_client = redis.from_url(
+    REDIS_URL, 
+    decode_responses=True,
+    socket_timeout=5.0,
+    socket_connect_timeout=5.0,
+    retry_on_timeout=True
+)
 
 # Nombre de la cola de seguridad (WAL)
 WAL_QUEUE_KEY = "wal:pending_charges"
