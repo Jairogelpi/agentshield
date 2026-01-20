@@ -10,6 +10,7 @@ from app.services.safe_logger import safe_logger
 from PIL import Image
 import pytesseract
 from pdf2image import convert_from_bytes
+from litellm import acompletion # OpenAI Bridge
 
 # 🧠 Importaciones para la Inteligencia Artificial Local
 # Usamos 'pipeline' que descarga y gestiona el modelo automáticamente la primera vez
@@ -62,7 +63,7 @@ class FileGuardian:
         content_sample = await self._read_file_head(file)
         
         # 2. Análisis Inteligente
-        content_category = self._analyze_content(filename, content_sample)
+        content_category = await self._analyze_content(filename, content_sample)
         
         # 3. Consultar Supabase para ver si esa categoría está prohibida
         await self._enforce_policy(tenant_id, dept_id, user_id, filename, content_category)
@@ -118,9 +119,9 @@ class FileGuardian:
         # Devolvemos los primeros 2000 caracteres para la IA
         return text_content[:2000]
 
-    def _analyze_content(self, filename: str, text: str) -> str:
+    async def _analyze_content(self, filename: str, text: str) -> str:
         """
-        El cerebro del sistema.
+        El cerebro del sistema (Powered by OpenAI).
         Retorna: 'INVOICE', 'HR_DATA' o 'GENERIC' (seguro).
         """
         # A. Barrido Regex (Rápido)
@@ -135,35 +136,61 @@ class FileGuardian:
             return "GENERIC" # No parece peligroso
 
         # B. Verificación IA (Lento pero preciso)
-        # Si no tenemos IA cargada, nos fiamos del Regex (Fail-Closed)
-        if not self.classifier:
-            return detected_trigger
-
-        # Preguntamos a la IA: ¿Cuál es la intención real?
-        # Definimos hipótesis contradictorias
-        if detected_trigger == "INVOICE":
-            labels = ["actual invoice with payment details", "educational document about invoicing", "software configuration"]
-            target_label = "actual invoice with payment details"
-        elif detected_trigger == "HR_DATA":
-            labels = ["private employee personal data", "public hr policy", "resume template"]
-            target_label = "private employee personal data"
-        else:
-            return detected_trigger
-
-        # Clasificamos
-        result = self.classifier(text[:1000], labels) # Analizamos solo el texto, no el nombre
-        top_label = result['labels'][0]
-        score = result['scores'][0]
-
-        logger.info(f"🤖 IA Análisis para '{filename}': {top_label} ({score:.2f})")
-
-        # Solo bloqueamos si la IA está >60% segura de que es DATOS REALES
-        if top_label == target_label and score > 0.6:
-            return detected_trigger
+        # Usamos OpenAI para resolver ambigüedad (Zero False Positives)
+        # 100% Accuracy requerida por el usuario.
         
-        # Si la IA dice que es "educational document", lo dejamos pasar
-        logger.info(f"✅ Falso Positivo evitado: Regex dijo {detected_trigger}, IA dijo {top_label}")
-        return "GENERIC"
+        # Llamada Asíncrona a la IA Suprema
+        return await self._semantic_verify_openai(filename, text, detected_trigger)
+
+    async def _semantic_verify_openai(self, filename: str, text: str, category: str) -> str:
+        """
+        Consulta a GPT-4o: ¿Es esto un documento real o solo ruido?
+        """
+        snippet = text[:2000]
+        
+        system_prompt = f"""
+        You are a Data Loss Prevention (DLP) determination engine.
+        Analyze the provided document text.
+        Your goal: Determine if this document IS A REAL {category} containing sensitive data, or if it is SAFE (educational, definition, blank template, code).
+        
+        Category to Detect: {category}
+        
+        Rules:
+        - If it looks like a real invoice/salary/report: RETURN "VIOLATION"
+        - If it is a policy document ABOUT invoices: RETURN "SAFE"
+        - If it is python/sql code: RETURN "SAFE"
+        
+        Respond ONLY with a JSON object: {{"verdict": "VIOLATION" | "SAFE", "confidence": 0.0-1.0, "reason": "short explanation"}}
+        """
+        
+        try:
+            response = await acompletion(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"FILENAME: {filename}\n\nCONTENT:\n{snippet}"}
+                ],
+                response_format={ "type": "json_object" }
+            )
+            
+            content = response.choices[0].message.content
+            result = json.loads(content)
+            
+            logger.info(f"🤖 OpenAI Verdict for {filename}: {result['verdict']} ({result['reason']})")
+            
+            if result['verdict'] == "VIOLATION":
+                return category
+            
+            return "GENERIC" # Safe
+            
+        except Exception as e:
+            logger.error(f"OpenAI Verification Failed: {e}")
+            # Fallback a Fail-Closed (Bloquear si hay duda y el regex saltó) o Fail-Open?
+            # User favors accuracy, but if API fails, security first -> Block.
+            return category
+            
+    # Legacy Local AI removed for GPT-4 preference
+    # def _semantic_verify(...)
 
     async def _enforce_policy(self, tenant_id, dept_id, user_id, filename, category):
         """Aplica la lógica de bloqueo consultando la DB."""
