@@ -1,5 +1,6 @@
 # --- LIBRERÍAS LIGERAS ---
 fastapi>=0.109.0
+fastmcp # Model Context Protocol Server
 granian
 pydantic>=2.0.0
 supabase
