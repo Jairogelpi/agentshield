@@ -1,12 +1,14 @@
 # scripts/billing_worker.py
-from app.utils import fast_json as json
 import asyncio
-import os
-import redis.asyncio as redis
-from supabase import create_client, Client
-from collections import defaultdict
 import logging
+import os
 import signal
+from collections import defaultdict
+
+import redis.asyncio as redis
+from supabase import Client, create_client
+
+from app.utils import fast_json as json
 
 # Logging setup
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -18,15 +20,18 @@ SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 REDIS_URL = os.getenv("REDIS_URL")
 
 if not all([SUPABASE_URL, SUPABASE_KEY, REDIS_URL]):
-    logger.error("Missing configuration values. Please set SUPABASE_URL, SUPABASE_SERVICE_KEY, and REDIS_URL.")
+    logger.error(
+        "Missing configuration values. Please set SUPABASE_URL, SUPABASE_SERVICE_KEY, and REDIS_URL."
+    )
     exit(1)
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-redis_client = redis.from_url(REDIS_URL, decode_responses=False) # Keep bytes for Streams
+redis_client = redis.from_url(REDIS_URL, decode_responses=False)  # Keep bytes for Streams
 
 STREAM_KEY = "billing:stream"
 GROUP_NAME = "billing_group"
 CONSUMER_NAME = "worker_1"
+
 
 async def setup_redis_group():
     try:
@@ -37,6 +42,7 @@ async def setup_redis_group():
             logger.info(f"Consumer Group '{GROUP_NAME}' already exists.")
         else:
             raise e
+
 
 async def flush_billing_to_supabase():
     """
@@ -59,24 +65,24 @@ async def flush_billing_to_supabase():
                 continue
 
             # 2. AGREGACIÓN INTELIGENTE (Batching)
-            batch_updates = defaultdict(float) # For Cost Centers
-            function_updates = defaultdict(float) # For Function Configs (Ghost Budget Fix)
+            batch_updates = defaultdict(float)  # For Cost Centers
+            function_updates = defaultdict(float)  # For Function Configs (Ghost Budget Fix)
             event_ids = []
 
             # redis returns: [[stream_name, [[msg_id, {field: value, ...}], ...]]]
             for stream_name, messages in events:
                 for msg_id, data in messages:
                     # Data is bytes in redis-py unless decode_responses=True (which we disabled for safety with binary data)
-                    tid = data.get(b'tid').decode('utf-8')
-                    cc = data.get(b'cc').decode('utf-8')
-                    amt = float(data.get(b'amt').decode('utf-8'))
-                    
+                    tid = data.get(b"tid").decode("utf-8")
+                    cc = data.get(b"cc").decode("utf-8")
+                    amt = float(data.get(b"amt").decode("utf-8"))
+
                     # Extract metadata for function_id
                     try:
-                        meta_raw = data.get(b'meta')
+                        meta_raw = data.get(b"meta")
                         if meta_raw:
-                            meta = json.loads(meta_raw.decode('utf-8'))
-                            fid = meta.get('function_id')
+                            meta = json.loads(meta_raw.decode("utf-8"))
+                            fid = meta.get("function_id")
                             if fid:
                                 function_updates[(tid, fid)] += amt
                     except Exception as meta_e:
@@ -89,14 +95,13 @@ async def flush_billing_to_supabase():
             if not batch_updates:
                 continue
 
-            logger.info(f"⚡ Flushing {len(event_ids)} events aggregated into {len(batch_updates)} updates.")
+            logger.info(
+                f"⚡ Flushing {len(event_ids)} events aggregated into {len(batch_updates)} updates."
+            )
 
             # 3. Escritura masiva en Supabase (Una sola transacción SQL)
             # Prepare payload for RPC
-            rpc_payload = [
-                {"tid": k[0], "cc": k[1], "amt": v} 
-                for k, v in batch_updates.items()
-            ]
+            rpc_payload = [{"tid": k[0], "cc": k[1], "amt": v} for k, v in batch_updates.items()]
 
             try:
                 # Execute RPC
@@ -104,22 +109,31 @@ async def flush_billing_to_supabase():
                 # But here we assume we can just await if we wrap it or if we use the async client properly (client is sync usually)
                 # For safety, let's wrap in executor.
                 loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, lambda: supabase.rpc("batch_increment_spend", {"payload": rpc_payload}).execute())
-                
+                await loop.run_in_executor(
+                    None,
+                    lambda: supabase.rpc(
+                        "batch_increment_spend", {"payload": rpc_payload}
+                    ).execute(),
+                )
+
                 # 3b. Escritura masiva para Functions (Si hay)
                 if function_updates:
                     func_payload = [
-                        {"tid": k[0], "fid": k[1], "amt": v}
-                        for k, v in function_updates.items()
+                        {"tid": k[0], "fid": k[1], "amt": v} for k, v in function_updates.items()
                     ]
-                    await loop.run_in_executor(None, lambda: supabase.rpc("batch_increment_function_spend", {"payload": func_payload}).execute())
-                
+                    await loop.run_in_executor(
+                        None,
+                        lambda: supabase.rpc(
+                            "batch_increment_function_spend", {"payload": func_payload}
+                        ).execute(),
+                    )
+
                 # 4. ACK (Acknowledge processing)
                 if event_ids:
                     await redis_client.xack(STREAM_KEY, GROUP_NAME, *event_ids)
                     # Optional: Delete form stream to keep it small (or use capped stream)
                     # await redis_client.xdel(STREAM_KEY, *event_ids)
-                
+
                 logger.info("✅ Batch Flush Successful.")
 
             except Exception as e:
@@ -132,9 +146,11 @@ async def flush_billing_to_supabase():
             logger.error(f"Worker Loop Error: {outer_e}")
             await asyncio.sleep(1)
 
+
 def main():
     loop = asyncio.get_event_loop()
     loop.run_until_complete(flush_billing_to_supabase())
+
 
 if __name__ == "__main__":
     main()

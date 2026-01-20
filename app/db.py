@@ -25,7 +25,7 @@ redis_client = redis.from_url(
     decode_responses=True,
     socket_timeout=5.0,
     socket_connect_timeout=5.0,
-    retry_on_timeout=True
+    retry_on_timeout=True,
 )
 
 # Nombre de la cola de seguridad (WAL)
@@ -42,11 +42,17 @@ async def get_current_spend(tenant_id: str, cost_center: str):
     loop = asyncio.get_running_loop()
 
     def _fetch():
-        return supabase.table("cost_centers").select("current_spend").eq("tenant_id", tenant_id).eq("id", cost_center).execute()
+        return (
+            supabase.table("cost_centers")
+            .select("current_spend")
+            .eq("tenant_id", tenant_id)
+            .eq("id", cost_center)
+            .execute()
+        )
 
     res = await loop.run_in_executor(None, _fetch)
     if res.data:
-        val = res.data[0]['current_spend']
+        val = res.data[0]["current_spend"]
         # FIX: Evitar Race Condition "Check-Then-Set"
         # Usamos setnx (Set if Not Exists) para no sobrescribir incrementos concurrentes
         # que hayan ocurrido mientras consultábamos la DB.
@@ -86,7 +92,7 @@ async def increment_spend(tenant_id: str, cost_center: str, amount: Decimal, met
             "cc": cost_center,
             "amt": str(amount),
             "ts": str(time.time()),
-            "meta": json.dumps(metadata or {})
+            "meta": json.dumps(metadata or {}),
         }
 
         # Añadimos al stream 'billing:stream'
@@ -96,11 +102,7 @@ async def increment_spend(tenant_id: str, cost_center: str, amount: Decimal, met
         # Guardamos TAMBIÉN en la lista. El worker, cuando procese el stream con éxito,
         # deberá borrar este item de la lista (LREM) usando persist_spend_with_wal.
         # Esto garantiza que si el worker muere, recover_pending_charges encontrará los datos.
-        wal_payload = json.dumps({
-            "tid": tenant_id,
-            "cc": cost_center,
-            "amt": float(amount)
-        })
+        wal_payload = json.dumps({"tid": tenant_id, "cc": cost_center, "amt": float(amount)})
         await redis_client.rpush(WAL_QUEUE_KEY, wal_payload)  # <--- FIX: Double Write
 
         return new_total_cc
@@ -119,7 +121,7 @@ async def persist_spend_with_wal(charge: dict, raw_payload: str):
     """
     try:
         # Intentamos guardar en Supabase
-        success = await _persist_to_db_core(charge['tid'], charge['cc'], charge['amt'])
+        success = await _persist_to_db_core(charge["tid"], charge["cc"], charge["amt"])
 
         if success:
             # ✅ ÉXITO: Borramos del WAL (ACK)
@@ -139,11 +141,14 @@ async def _persist_to_db_core(tenant_id: str, cost_center: str, amount: Decimal)
         loop = asyncio.get_running_loop()
 
         def _exec():
-            return supabase.rpc("increment_spend", {
-                "p_tenant_id": tenant_id,
-                "p_cc_id": cost_center,
-                "p_amount": float(amount)  # RPC parameter
-            }).execute()
+            return supabase.rpc(
+                "increment_spend",
+                {
+                    "p_tenant_id": tenant_id,
+                    "p_cc_id": cost_center,
+                    "p_amount": float(amount),  # RPC parameter
+                },
+            ).execute()
 
         await loop.run_in_executor(None, _exec)
         return True
@@ -180,11 +185,14 @@ async def recover_pending_charges():
                 # Ejecutamos en executor para no bloquear el loop principal si tarda
                 # Usamos la función rpc directamente
                 def _exec_recovery():
-                    return supabase.rpc("increment_spend", {
-                        "p_tenant_id": data['tid'],
-                        "p_cc_id": data['cc'],
-                        "p_amount": data['amt']
-                    }).execute()
+                    return supabase.rpc(
+                        "increment_spend",
+                        {
+                            "p_tenant_id": data["tid"],
+                            "p_cc_id": data["cc"],
+                            "p_amount": data["amt"],
+                        },
+                    ).execute()
 
                 await loop.run_in_executor(None, _exec_recovery)
 
@@ -216,12 +224,14 @@ async def get_function_config(tenant_id: str, func_id: str) -> dict:
     loop = asyncio.get_running_loop()
 
     def _fetch():
-        return supabase.table("function_configs")\
-            .select("*")\
-            .eq("tenant_id", tenant_id)\
-            .eq("function_id", func_id)\
-            .maybe_single()\
+        return (
+            supabase.table("function_configs")
+            .select("*")
+            .eq("tenant_id", tenant_id)
+            .eq("function_id", func_id)
+            .maybe_single()
             .execute()
+        )
 
     res = await loop.run_in_executor(None, _fetch)
 
@@ -231,17 +241,17 @@ async def get_function_config(tenant_id: str, func_id: str) -> dict:
         # --- LÓGICA DE CENICIENTA (Lazy Reset) ---
         # Si last_used es de ayer y hay gasto acumulado, reiniciamos a 0.
         try:
-            last_used_str = config.get('last_used')
+            last_used_str = config.get("last_used")
             if last_used_str:
                 # Ajuste de zona horaria simple (Z -> +00:00 para Python isoformat)
-                last_used_dt = datetime.fromisoformat(last_used_str.replace('Z', '+00:00'))
+                last_used_dt = datetime.fromisoformat(last_used_str.replace("Z", "+00:00"))
                 today = datetime.utcnow().date()
 
-                if last_used_dt.date() < today and config.get('current_spend_daily', 0) > 0:
+                if last_used_dt.date() < today and config.get("current_spend_daily", 0) > 0:
                     # 1. Reiniciamos en background (Fire & Forget)
                     asyncio.create_task(_reset_daily_spend(tenant_id, func_id))
                     # 2. Falseamos el dato localmente para permitir esta request
-                    config['current_spend_daily'] = 0.0
+                    config["current_spend_daily"] = 0.0
         except Exception as e:
             logger.warning(f"Lazy Reset logic check failed: {e}")
 
@@ -259,7 +269,11 @@ async def _reset_daily_spend(tid, fid):
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None,
-            lambda: supabase.table("function_configs").update({"current_spend_daily": 0}).eq("tenant_id", tid).eq("function_id", fid).execute()
+            lambda: supabase.table("function_configs")
+            .update({"current_spend_daily": 0})
+            .eq("tenant_id", tid)
+            .eq("function_id", fid)
+            .execute(),
         )
     except Exception as e:
         logger.warning(f"Failed to reset daily spend for {fid}: {e}")
@@ -271,7 +285,13 @@ async def _touch_function_last_used(tid, fid):
         loop = asyncio.get_running_loop()
 
         def _update():
-            return supabase.table("function_configs").update({"last_used": "now()"}).eq("tenant_id", tid).eq("function_id", fid).execute()
+            return (
+                supabase.table("function_configs")
+                .update({"last_used": "now()"})
+                .eq("tenant_id", tid)
+                .eq("function_id", fid)
+                .execute()
+            )
 
         await loop.run_in_executor(None, _update)
     except Exception as e:

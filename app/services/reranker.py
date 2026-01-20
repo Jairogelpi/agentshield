@@ -1,11 +1,13 @@
-import logging
 import asyncio
+import logging
+
 from flashrank import Ranker, RerankRequest
 
 # Configuración del Logger existente
 logger = logging.getLogger("agentshield.reranker")
 
 _reranker = None
+
 
 def get_reranker_model():
     """
@@ -20,6 +22,7 @@ def get_reranker_model():
         _reranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2", cache_dir="/opt/models")
     return _reranker
 
+
 async def verify_cache_logic(query: str, cached_query: str) -> tuple[bool, float]:
     """
     Valida si el 'query' actual significa lo mismo que el 'cached_query'.
@@ -31,12 +34,12 @@ async def verify_cache_logic(query: str, cached_query: str) -> tuple[bool, float
             return True, 1.0
 
         # NOTA: No usamos RapidFuzz aquí para no perder detección de sinónimos.
-        
+
         # 2. Reranking Ultra-Rápido (ONNX)
         # Ejecutamos en un executor para no bloquear el Event Loop principal,
         # aunque FlashRank es tan rápido que el bloqueo es mínimo.
         loop = asyncio.get_running_loop()
-        
+
         def _run_inference():
             ranker = get_reranker_model()
             request = RerankRequest(query=query, passages=[{"text": cached_query}])
@@ -44,20 +47,20 @@ async def verify_cache_logic(query: str, cached_query: str) -> tuple[bool, float
 
         # Offload a hilo para mantener la naturaleza "Non-blocking" de AgentShield
         results = await loop.run_in_executor(None, _run_inference)
-        
+
         if not results:
             return False, 0.0
-            
-        score = results[0]['score'] # FlashRank devuelve score de 0.0 a 1.0 aprox
-        
+
+        score = results[0]["score"]  # FlashRank devuelve score de 0.0 a 1.0 aprox
+
         # Ajuste de umbral: 0.85 suele ser muy seguro para cross-encoder
         is_valid = score >= 0.85
-        
+
         if is_valid:
             logger.info(f"✅ Semantic Match (ONNX): {score:.4f}")
         else:
             logger.info(f"🛡️ Match Rejected: {score:.4f}")
-            
+
         return is_valid, score
 
     except Exception as e:
@@ -65,7 +68,9 @@ async def verify_cache_logic(query: str, cached_query: str) -> tuple[bool, float
         # Fail-safe: Si falla el reranker, asumimos que NO es match para evitar devolver basura.
         return False, 0.0
 
+
 from litellm import embedding as litellm_embedding
+
 
 async def get_embedding(text: str) -> list[float]:
     """
@@ -75,12 +80,9 @@ async def get_embedding(text: str) -> list[float]:
         # Usamos text-embedding-3-small por ser SOTA en coste/performance
         # Asegurate de tener OPENAI_API_KEY o similar en env.
         response = await asyncio.to_thread(
-            litellm_embedding,
-            model="text-embedding-3-small",
-            input=[text]
+            litellm_embedding, model="text-embedding-3-small", input=[text]
         )
-        return response['data'][0]['embedding']
+        return response["data"][0]["embedding"]
     except Exception as e:
         logger.error(f"Embedding failed: {e}")
         return []
-

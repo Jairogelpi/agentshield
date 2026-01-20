@@ -1,11 +1,14 @@
-from fastapi import APIRouter, HTTPException, Request
-from app.db import supabase, redis_client
 import json
 import logging
+
+from fastapi import APIRouter, HTTPException, Request
+
+from app.db import redis_client, supabase
 
 logger = logging.getLogger("agentshield.public")
 
 router = APIRouter(tags=["Public Config"])
+
 
 @router.get("/v1/public/tenant-config")
 async def get_tenant_config(request: Request, domain: str = None):
@@ -18,8 +21,8 @@ async def get_tenant_config(request: Request, domain: str = None):
     if not domain:
         host = request.headers.get("host", "")
         # Limpiar puerto si existe (ej: localhost:3000 -> localhost)
-        domain = host.split(":")[0] 
-        
+        domain = host.split(":")[0]
+
     try:
         # 1. Check Redis Cache (Critical for performance)
         cache_key = f"tenant_config:{domain}"
@@ -30,10 +33,12 @@ async def get_tenant_config(request: Request, domain: str = None):
         # 2. Lookup DB
         # Buscamos por custom_domain
         # Simplificación: Asumimos 'custom_domain' es único y correcto
-        res = supabase.table("tenants")\
-            .select("id, name, brand_config, sso_config, custom_domain")\
-            .eq("custom_domain", domain)\
+        res = (
+            supabase.table("tenants")
+            .select("id, name, brand_config, sso_config, custom_domain")
+            .eq("custom_domain", domain)
             .execute()
+        )
 
         data = res.data[0] if res.data else None
 
@@ -41,25 +46,22 @@ async def get_tenant_config(request: Request, domain: str = None):
             # Fallback al dominio por defecto si no existe
             return {
                 "found": False,
-                "brand": {
-                    "company_name": "AgentShield",
-                    "primary_color": "#000000"
-                }
+                "brand": {"company_name": "AgentShield", "primary_color": "#000000"},
             }
 
         config = {
             "found": True,
-            "tenant_id": data['id'],
-            "name": data['name'],
-            "brand": data['brand_config'],
-            "sso": data['sso_config'] # Solo public keys/endpoints, nada secreto
+            "tenant_id": data["id"],
+            "name": data["name"],
+            "brand": data["brand_config"],
+            "sso": data["sso_config"],  # Solo public keys/endpoints, nada secreto
         }
 
         # 3. Guardar en Caché (1 hora)
         await redis_client.setex(cache_key, 3600, json.dumps(config))
-        
+
         return config
-        
+
     except Exception as e:
         logger.error(f"Tenant config lookup failed: {e}")
         return {"found": False, "error": str(e)}

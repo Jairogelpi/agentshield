@@ -1,17 +1,21 @@
 import json
 import logging
-from typing import Dict, Any, Optional
-from app.services.llm_gateway import execute_with_resilience
+from typing import Any, Dict, Optional
+
 from app.db import supabase
+from app.services.llm_gateway import execute_with_resilience
 
 logger = logging.getLogger("agentshield.role_architect")
+
 
 class RoleArchitect:
     """
     Usa OpenAI para transformar descripciones de negocio en configuraciones técnicas.
     """
 
-    async def auto_configure_role(self, tenant_id: str, description: str, user_id: str = "admin") -> Dict[str, Any]:
+    async def auto_configure_role(
+        self, tenant_id: str, description: str, user_id: str = "admin"
+    ) -> dict[str, Any]:
         prompt = f"""
         Actúa como un Arquitecto de Sistemas de IA y Experto en Ciberseguridad.
         El cliente quiere crear un rol operativo basado en esta descripción: "{description}"
@@ -32,10 +36,10 @@ class RoleArchitect:
 
         # Usamos GPT-4o para garantizar la calidad del System Prompt
         response = await execute_with_resilience(
-            tier="agentshield-smart", # GPT-4o typically
+            tier="agentshield-smart",  # GPT-4o typically
             messages=[{"role": "user", "content": prompt}],
             user_id=user_id,
-            temperature=0.7
+            temperature=0.7,
         )
 
         try:
@@ -43,27 +47,34 @@ class RoleArchitect:
             if hasattr(response, "choices"):
                 content = response.choices[0].message.content
             elif isinstance(response, dict):
-                content = response['choices'][0]['message']['content']
-            
+                content = response["choices"][0]["message"]["content"]
+
             clean_json = content.strip().replace("```json", "").replace("```", "")
             config = json.loads(clean_json)
 
             # Persistimos en la tabla de definiciones
             # Upsert logic: if exists based on unique constraint (tenant, dept, function)
-            res = supabase.table("role_definitions").upsert({
-                "tenant_id": tenant_id,
-                "department": config.get('department', 'General'),
-                "function": config.get('function', 'Staff'),
-                "system_persona": config.get('system_persona'),
-                "pii_policy": config.get('pii_policy', 'REDACT'),
-                "allowed_modes": [config.get('default_mode', 'agentshield-secure')],
-                "ai_generated": True,
-                "source_description": description,
-                "metadata": {
-                    "active_rules": config.get('active_rules', []),
-                    "source": description
-                }
-            }, on_conflict="tenant_id, department, function").execute()
+            res = (
+                supabase.table("role_definitions")
+                .upsert(
+                    {
+                        "tenant_id": tenant_id,
+                        "department": config.get("department", "General"),
+                        "function": config.get("function", "Staff"),
+                        "system_persona": config.get("system_persona"),
+                        "pii_policy": config.get("pii_policy", "REDACT"),
+                        "allowed_modes": [config.get("default_mode", "agentshield-secure")],
+                        "ai_generated": True,
+                        "source_description": description,
+                        "metadata": {
+                            "active_rules": config.get("active_rules", []),
+                            "source": description,
+                        },
+                    },
+                    on_conflict="tenant_id, department, function",
+                )
+                .execute()
+            )
 
             return res.data[0] if res.data else config
 
@@ -75,7 +86,8 @@ class RoleArchitect:
                 "function": "Fallback Agent",
                 "system_persona": "You are a helpful assistant.",
                 "pii_policy": "REDACT",
-                "error": str(e)
+                "error": str(e),
             }
+
 
 role_architect = RoleArchitect()

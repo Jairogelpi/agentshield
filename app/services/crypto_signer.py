@@ -1,13 +1,13 @@
 # app/services/crypto_signer.py
 import base64
-import json
 import hashlib
-import os
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.backends import default_backend
+import json
 import logging
+import os
+
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 logger = logging.getLogger("agentshield.crypto")
 
@@ -16,6 +16,7 @@ logger = logging.getLogger("agentshield.crypto")
 CERT_DIR = "certs"
 PRIVATE_KEY_PATH = os.path.join(CERT_DIR, "private_key.pem")
 PUBLIC_KEY_PATH = os.path.join(CERT_DIR, "public_key.pem")
+
 
 def load_private_key():
     """
@@ -28,45 +29,51 @@ def load_private_key():
     env_key = os.getenv("PRIVATE_KEY_PEM")
     if env_key:
         try:
-             # Si viene como string en una línea (sin saltos), hay que formatearlo o asumirlo válido
-             # Normalmente en Render se puede pegar el contenido multilínea.
-             # Convertimos a bytes
-             key_bytes = env_key.encode('utf-8')
-             logger.info("✅ Loaded Private Key from Environment")
-             return serialization.load_pem_private_key(key_bytes, password=None)
+            # Si viene como string en una línea (sin saltos), hay que formatearlo o asumirlo válido
+            # Normalmente en Render se puede pegar el contenido multilínea.
+            # Convertimos a bytes
+            key_bytes = env_key.encode("utf-8")
+            logger.info("✅ Loaded Private Key from Environment")
+            return serialization.load_pem_private_key(key_bytes, password=None)
         except Exception as e:
-             logger.error(f"❌ Failed to load key from ENV: {e}")
-             # Fallback to local file
+            logger.error(f"❌ Failed to load key from ENV: {e}")
+            # Fallback to local file
 
     # 2. Fallback: Archivo Local (Desarrollo)
     if not os.path.exists(PRIVATE_KEY_PATH):
         logger.info("🔑 Generating new RSA 2048 Keypair for Digital Notary...")
         # Generar una si no existe (Solo para setup inicial)
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        
+
         # Guardar en disco (¡Protege este archivo!)
         os.makedirs(CERT_DIR, exist_ok=True)
         with open(PRIVATE_KEY_PATH, "wb") as f:
-            f.write(private_key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.PKCS8,
-                encryption_algorithm=serialization.NoEncryption()
-            ))
+            f.write(
+                private_key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.PKCS8,
+                    encryption_algorithm=serialization.NoEncryption(),
+                )
+            )
         # Generar pública también para el auditor
         public_key = private_key.public_key()
         with open(PUBLIC_KEY_PATH, "wb") as f:
-            f.write(public_key.public_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PublicFormat.SubjectPublicKeyInfo
-            ))
+            f.write(
+                public_key.public_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PublicFormat.SubjectPublicKeyInfo,
+                )
+            )
         logger.info(f"✅ Keys generated in {CERT_DIR}/")
         return private_key
 
     with open(PRIVATE_KEY_PATH, "rb") as key_file:
         return serialization.load_pem_private_key(key_file.read(), password=None)
 
+
 # Singleton loader
 _signer_key = load_private_key()
+
 
 def sign_payload(payload: dict) -> str:
     """
@@ -75,21 +82,19 @@ def sign_payload(payload: dict) -> str:
     """
     # 1. Canonicalizar el JSON (ordenar keys para que el hash sea estable)
     # separators=(',', ':') elimina espacios en blanco para consistencia estricta
-    payload_bytes = json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8')
-    
+    payload_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
     # 2. Firmar con SHA256 + RSA PSS (Probabilistic Signature Scheme - Recommended)
     signature = _signer_key.sign(
         payload_bytes,
-        padding.PSS(
-            mgf=padding.MGF1(hashes.SHA256()),
-            salt_length=padding.PSS.MAX_LENGTH
-        ),
-        hashes.SHA256()
+        padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
+        hashes.SHA256(),
     )
-    
-    return base64.b64encode(signature).decode('utf-8')
+
+    return base64.b64encode(signature).decode("utf-8")
+
 
 def hash_content(data: dict) -> str:
     """Crea un Hash SHA256 del contenido (Huella digital)."""
-    payload_bytes = json.dumps(data, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    payload_bytes = json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload_bytes).hexdigest()

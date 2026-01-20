@@ -1,19 +1,23 @@
 # app/services/role_generator.py
 import json
 import logging
-from app.services.llm_gateway import execute_with_resilience
-from pydantic import BaseModel
 from typing import List
+
+from pydantic import BaseModel
+
+from app.services.llm_gateway import execute_with_resilience
 
 logger = logging.getLogger("agentshield.role_generator")
 
+
 class GeneratedRole(BaseModel):
     system_persona: str
-    allowed_modes: List[str]
+    allowed_modes: list[str]
     pii_policy: str
     max_tokens: int
     suggested_department: str
     suggested_function: str
+
 
 class RoleGenerator:
     """
@@ -38,10 +42,10 @@ class RoleGenerator:
 
         # Usamos el gateway para resiliencia y métricas
         response = await execute_with_resilience(
-            tier="agentshield-smart", # Usamos el modelo más listo para generar roles
+            tier="agentshield-smart",  # Usamos el modelo más listo para generar roles
             messages=[{"role": "user", "content": prompt}],
             user_id=user_id,
-            temperature=0.7
+            temperature=0.7,
         )
 
         try:
@@ -49,8 +53,8 @@ class RoleGenerator:
             if hasattr(response, "choices"):
                 content = response.choices[0].message.content
             elif isinstance(response, dict):
-                content = response['choices'][0]['message']['content']
-            
+                content = response["choices"][0]["message"]["content"]
+
             # Limpiar posibles backticks de markdown
             clean_json = content.strip().replace("```json", "").replace("```", "")
             data = json.loads(clean_json)
@@ -64,7 +68,8 @@ class RoleGenerator:
                 pii_policy="REDACT",
                 max_tokens=2000,
                 suggested_department="General",
-                suggested_function="Staff"
+                suggested_function="Staff",
             )
+
 
 role_generator = RoleGenerator()

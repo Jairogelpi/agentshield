@@ -1,8 +1,9 @@
 # app/services/hud.py
 import json
 import time
-from typing import Dict, Any, Optional
 from dataclasses import dataclass
+from typing import Any, Dict, Optional
+
 
 @dataclass
 class HudMetrics:
@@ -18,13 +19,17 @@ class HudMetrics:
     trust_score: int
     pii_redactions: int
     intent: str
-    role: Optional[str] = None 
-    active_rules: Optional[list] = None # [NEW] List of strings
+    role: str | None = None
+    active_rules: list | None = None  # [NEW] List of strings
+
 
 def _get_risk_badge(score: int) -> str:
-    if score >= 80: return "🟢 LOW"
-    if score >= 50: return "🟡 MED"
+    if score >= 80:
+        return "🟢 LOW"
+    if score >= 50:
+        return "🟡 MED"
     return "🔴 HIGH"
+
 
 def render_hud_markdown(metrics: HudMetrics) -> str:
     """
@@ -36,13 +41,14 @@ def render_hud_markdown(metrics: HudMetrics) -> str:
         savings_pct = int((metrics.savings_usd / (metrics.cost_usd + metrics.savings_usd)) * 100)
 
     role_str = metrics.role or "Standard"
-    
+
     # Diseño "Cockpit" compacto
     return (
         f"\n\n---\n"
         f"**🛡️ AgentShield HUD** | **Role:** `{role_str}` | **Trust:** `{metrics.trust_score}/100`  \n"
         f"**Savings:** `${metrics.savings_usd:.4f}` | **CO2 Saved:** `{metrics.co2_saved_grams:.2f}g`"
     )
+
 
 def build_structured_event(metrics: HudMetrics) -> str:
     """
@@ -56,25 +62,22 @@ def build_structured_event(metrics: HudMetrics) -> str:
             "financial": {
                 "cost": metrics.cost_usd,
                 "savings": metrics.savings_usd,
-                "currency": "USD"
+                "currency": "USD",
             },
             "sustainability": {
                 "emitted": metrics.co2_grams,
                 "avoided": metrics.co2_saved_grams,
-                "unit": "grams_co2"
+                "unit": "grams_co2",
             },
-            "security": {
-                "trust_score": metrics.trust_score,
-                "pii_count": metrics.pii_redactions
-            },
+            "security": {"trust_score": metrics.trust_score, "pii_count": metrics.pii_redactions},
             "performance": {
                 "latency_ms": metrics.latency_ms,
                 "model": metrics.model_used,
                 "tokens": metrics.tokens_total,
-                "role": metrics.role 
+                "role": metrics.role,
             },
-            "active_rules": metrics.active_rules or [] # [NEW]
-        }
+            "active_rules": metrics.active_rules or [],  # [NEW]
+        },
     }
     # Formato SSE estándar: event: nombre \n data: json \n\n
     return f"event: agentshield.hud\ndata: {json.dumps(payload)}\n\n"

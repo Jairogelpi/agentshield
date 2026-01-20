@@ -1,9 +1,11 @@
 # app/services/policy_copilot.py
 import json
-from app.db import supabase
-from litellm import completion
-from typing import List, Dict
 import logging
+from typing import Dict, List
+
+from litellm import completion
+
+from app.db import supabase
 
 logger = logging.getLogger("agentshield.copilot")
 
@@ -46,19 +48,25 @@ Input: "Avísame si alguien de Marketing gasta más de 500 en Ads"
 Output: {{ "tool_name": "google_ads", "target_dept": "marketing", "action": "REQUIRE_APPROVAL", "approval_group": "manager", "argument_rules": {{"amount": {{"gt": 500}}}}, "explanation": "Requiere aprobación para gastos > $500 en Marketing." }}
 """
 
-async def generate_policy_json(tenant_id: str, user_prompt: str) -> Dict:
+
+async def generate_policy_json(tenant_id: str, user_prompt: str) -> dict:
     """
     Toma una orden verbal y devuelve la estructura para 'tool_policies'.
     """
-    
+
     # 1. Obtener herramientas reales para dar contexto a la IA
     try:
-        res = supabase.table("tool_definitions").select("name, description").eq("tenant_id", tenant_id).execute()
+        res = (
+            supabase.table("tool_definitions")
+            .select("name, description")
+            .eq("tenant_id", tenant_id)
+            .execute()
+        )
         tools_list = res.data or []
     except Exception as e:
         logger.warning(f"Failed to fetch tools for copilot: {e}")
         tools_list = []
-    
+
     # Formatear catálogo para el prompt
     catalog_str = "\n".join([f"- {t['name']}: {t.get('description', '')}" for t in tools_list])
     if not catalog_str:
@@ -66,32 +74,33 @@ async def generate_policy_json(tenant_id: str, user_prompt: str) -> Dict:
 
     # 2. Inyectar en el Prompt
     final_prompt = SYSTEM_PROMPT_TEMPLATE.format(tools_catalog=catalog_str)
-    
+
     # 3. Llamada al LLM (Usar modelo inteligente para lógica, GPT-4 o Claude 3.5 Sonnet)
     # Nota: Usamos 'gpt-4o' como solicitado, o fallback a lo que esté configurado en env
     try:
         response = completion(
-            model="gpt-4o", 
+            model="gpt-4o",
             messages=[
                 {"role": "system", "content": final_prompt},
-                {"role": "user", "content": user_prompt}
+                {"role": "user", "content": user_prompt},
             ],
-            temperature=0.0, # Cero creatividad, máxima precisión
-            response_format={ "type": "json_object" } # Forzar JSON válido
+            temperature=0.0,  # Cero creatividad, máxima precisión
+            response_format={"type": "json_object"},  # Forzar JSON válido
         )
-        
+
         content = response.choices[0].message.content
         return json.loads(content)
-        
+
     except Exception as e:
         logger.error(f"Copilot LLM error: {e}")
         return {
-            "error": "Failed to generate policy", 
+            "error": "Failed to generate policy",
             "details": str(e),
-            "explanation": "Lo siento, hubo un error procesando tu solicitud. Por favor intenta ser más específico."
+            "explanation": "Lo siento, hubo un error procesando tu solicitud. Por favor intenta ser más específico.",
         }
 
-async def generate_custom_pii_rule(user_prompt: str) -> Dict:
+
+async def generate_custom_pii_rule(user_prompt: str) -> dict:
     """
     Genera una regla Regex a partir de una descripción natural.
     """
@@ -112,15 +121,15 @@ async def generate_custom_pii_rule(user_prompt: str) -> Dict:
     2. Avoid catastrophic backtracking (be specific).
     3. If user asks to block 'everything' or 'bad words', provide a generic safe list or refuse politely in explanation.
     """
-    
+
     try:
         response = completion(
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
+                {"role": "user", "content": user_prompt},
             ],
-            response_format={ "type": "json_object" }
+            response_format={"type": "json_object"},
         )
         return json.loads(response.choices[0].message.content)
     except Exception as e:

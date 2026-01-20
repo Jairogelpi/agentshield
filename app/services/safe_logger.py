@@ -1,11 +1,14 @@
 import logging
+
 from app.services.pii_guard import redact_pii_sync
+
 
 class PIIRedactionFilter(logging.Filter):
     """
     Intercepta cada log ANTES de que salga hacia Logtail/Consola.
     Si detecta emails, teléfonos o nombres, los censura.
     """
+
     def filter(self, record):
         # 1. Limpiar el mensaje principal
         if isinstance(record.msg, str):
@@ -17,7 +20,7 @@ class PIIRedactionFilter(logging.Filter):
                 except:
                     # Fail-safe: Si falla PII guard, mejor no loguear el contenido original
                     record.msg = "[LOG REDACTION FAILED - CONTENT HIDDEN FOR SAFETY]"
-        
+
         # 2. Limpiar argumentos (si usas logger.error("Hola %s", variable))
         if record.args:
             new_args = []
@@ -30,5 +33,5 @@ class PIIRedactionFilter(logging.Filter):
                 else:
                     new_args.append(arg)
             record.args = tuple(new_args)
-            
+
         return True

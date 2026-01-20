@@ -1,12 +1,15 @@
-import httpx
-import logging
 import asyncio
-from app.db import supabase, redis_client
-from litellm import model_cost  # <--- LA FUENTE DE LA VERDAD
+import logging
 from typing import Optional
+
+import httpx
+from litellm import model_cost  # <--- LA FUENTE DE LA VERDAD
+
+from app.db import redis_client, supabase
 
 # Configuración
 logger = logging.getLogger("agentshield.pricing")
+
 
 async def sync_universal_prices():
     """
@@ -15,29 +18,30 @@ async def sync_universal_prices():
     2. OpenRouter API (Fallback): Para modelos nuevos que LiteLLM aun no tiene hardcoded.
     """
     logger.info("⚡ Iniciando Protocolo Espejo (LiteLLM + OpenRouter)...")
-    
-    updates_map = {} # Usamos dict para evitar duplicados, clave = model_name
+
+    updates_map = {}  # Usamos dict para evitar duplicados, clave = model_name
 
     # --- FASE 1: EXTRACCIÓN DIRECTA DE LITELLM ---
     # Esto garantiza que tus cobros sean idénticos a los costes técnicos
     try:
         logger.info(f"🔮 Leyendo {len(model_cost)} modelos internos de LiteLLM...")
-        
+
         for model_name, info in model_cost.items():
             try:
                 # Normalizamos precios
                 p_in = float(info.get("input_cost_per_token", 0))
                 p_out = float(info.get("output_cost_per_token", 0))
-                
-                if p_in == 0 and p_out == 0: continue
-                
+
+                if p_in == 0 and p_out == 0:
+                    continue
+
                 # Detectar proveedor
                 provider = "generic"
                 if "litellm_provider" in info:
                     provider = info["litellm_provider"]
                 elif "/" in model_name:
                     provider = model_name.split("/")[0]
-                
+
                 updates_map[model_name] = {
                     "provider": provider,
                     "model": model_name,
@@ -45,9 +49,9 @@ async def sync_universal_prices():
                     "price_out": p_out,
                     "is_active": True,
                     "updated_at": "now()",
-                    "source": "litellm_internal"
+                    "source": "litellm_internal",
                 }
-            except Exception as e:
+            except Exception:
                 continue
     except Exception as e:
         logger.error(f"⚠️ Error leyendo LiteLLM internals: {e}")
@@ -70,7 +74,7 @@ async def sync_universal_prices():
                             "price_out": float(pricing.get("completion", 0)),
                             "is_active": True,
                             "updated_at": "now()",
-                            "source": "openrouter_api"
+                            "source": "openrouter_api",
                         }
     except Exception as e:
         logger.warning(f"⚠️ OpenRouter sync skipped: {e}")
@@ -80,12 +84,12 @@ async def sync_universal_prices():
         return {"status": "no_changes"}
 
     updates_list = list(updates_map.values())
-    
+
     try:
         # 3.1 DB Upsert (Lotes)
         batch_size = 1000
         for i in range(0, len(updates_list), batch_size):
-            batch = updates_list[i:i + batch_size]
+            batch = updates_list[i : i + batch_size]
             # Upsert ignorando conflictos
             supabase.table("model_prices").upsert(batch, on_conflict="provider, model").execute()
 
@@ -97,16 +101,19 @@ async def sync_universal_prices():
             # Key simple para acceso O(1)
             cache_key = f"price:{item['model']}"
             val = f"{item['price_in']}|{item['price_out']}"
-            pipe.setex(cache_key, 86400 * 7, val) # 1 semana de cache
-        
+            pipe.setex(cache_key, 86400 * 7, val)  # 1 semana de cache
+
         await pipe.execute()
-        
-        logger.info(f"✅ Sincronización Universal Completada: {len(updates_list)} modelos actualizados.")
+
+        logger.info(
+            f"✅ Sincronización Universal Completada: {len(updates_list)} modelos actualizados."
+        )
         return {"status": "success", "count": len(updates_list)}
 
     except Exception as e:
         logger.error(f"❌ DB Write Error: {e}")
         return {"status": "error", "message": str(e)}
+
 
 async def audit_and_correct_price(model: str, used_p_in: float, used_p_out: float):
     """
@@ -117,31 +124,44 @@ async def audit_and_correct_price(model: str, used_p_in: float, used_p_out: floa
         cache_key = f"price:{model}"
         # Verificar qué tenemos en Redis
         cached = await redis_client.get(cache_key)
-        
+
         needs_update = True
         if cached:
             c_in, c_out = map(float, cached.split("|"))
             # Usamos una tolerancia pequeña por errores de coma flotante
             if abs(c_in - used_p_in) < 1e-9 and abs(c_out - used_p_out) < 1e-9:
                 needs_update = False
-        
+
         if needs_update:
             logger.warning(f"🔧 AUTO-CORRECCIÓN DE PRECIO para {model}: {used_p_in}/{used_p_out}")
             # Actualizar Redis (Instantáneo)
             await redis_client.setex(cache_key, 86400 * 7, f"{used_p_in}|{used_p_out}")
-            
+
             # Actualizar DB (Background) - Usamos un provider genérico si no lo sabemos
             provider = model.split("/")[0] if "/" in model else "unknown"
             asyncio.create_task(_async_db_update(provider, model, used_p_in, used_p_out))
-            
+
     except Exception as e:
         logger.error(f"Audit failed: {e}")
+
 
 async def _async_db_update(provider, model, p_in, p_out):
     try:
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, lambda: supabase.table("model_prices").upsert({
-            "provider": provider, "model": model, "price_in": p_in, "price_out": p_out, "updated_at": "now()"
-        }, on_conflict="provider, model").execute())
+        await loop.run_in_executor(
+            None,
+            lambda: supabase.table("model_prices")
+            .upsert(
+                {
+                    "provider": provider,
+                    "model": model,
+                    "price_in": p_in,
+                    "price_out": p_out,
+                    "updated_at": "now()",
+                },
+                on_conflict="provider, model",
+            )
+            .execute(),
+        )
     except Exception as e:
         logger.error(f"Async DB Price Update failed: {e}")
