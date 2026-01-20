@@ -1,5 +1,7 @@
 from app.db import redis_client, supabase
 from app.services.event_bus import event_bus
+import logging
+from typing import Dict, Any
 
 logger = logging.getLogger("agentshield.trust")
 
