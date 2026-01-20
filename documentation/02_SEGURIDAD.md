@@ -85,7 +85,8 @@ Interceptamos el flujo en `POST /v1/files` antes de indexar nada.
     *   **Paso 1 (0ms)**: Regex detecta palabras clave ("Factura").
     *   **Paso 2 (200ms)**: Modelo de IA Local (DistilBART/CPU) confirma la intención. Diferencia "Datos Reales" de "Documentación Educativa" para reducir falsos positivos.
     *   **Privacidad**: Todo corre en local sin salir del servidor.
-2.  **Anti-DoS (Size Limit)**: Lectura segura de solo los primeros 2KB (`_read_file_head`) para evitar saturación de RAM.
+2.  **Vision Engine (OCR)**: Lee píxeles. Si subes una foto de una factura (JPG) o un PDF escaneado, Tesseract extrae el texto en el contenedor antes del análisis. Cierra la brecha analógica.
+3.  **Anti-DoS (Size Limit)**: Lectura segura de solo los primeros 2KB (`_read_file_head`) para evitar saturación de RAM.
 3.  **Motor de Políticas Unified**: Reutilizamos la tabla `policies` con `action='BLOCK_UPLOAD'`.
     *   Ejemplo: `{"block_categories": ["INVOICE", "PAYSLIP"]}`
 4.  **Auditoría**: Cada bloqueo se registra en `policy_events` junto con los bloqueos de prompts, unificando la visión de seguridad.

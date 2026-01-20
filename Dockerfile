@@ -3,10 +3,15 @@
 # ETAPA 1: Builder (Compilación rápida)
 FROM python:3.13-slim AS builder
 
-# 1. Instalar Rust y herramientas de compilación
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
+# 1.# Instalar dependencias del sistema incluyendo Tesseract OCR
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libpq-dev \
     curl \
+    tesseract-ocr \
+    libtesseract-dev \
+    poppler-utils \
+    && rm -rf /var/lib/apt/lists/* \
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 

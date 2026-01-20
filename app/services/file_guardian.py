@@ -1,11 +1,15 @@
 # app/services/file_guardian.py
 import logging
+import io
 import json
 import re
 from typing import Optional
 from fastapi import UploadFile, HTTPException
 from app.db import supabase
 from app.services.safe_logger import safe_logger
+from PIL import Image
+import pytesseract
+from pdf2image import convert_from_bytes
 
 # 🧠 Importaciones para la Inteligencia Artificial Local
 # Usamos 'pipeline' que descarga y gestiona el modelo automáticamente la primera vez
@@ -66,14 +70,53 @@ class FileGuardian:
         return True
 
     async def _read_file_head(self, file: UploadFile, size=2048) -> str:
-        """Lee el inicio del archivo de forma segura."""
+        """
+        Extracción Inteligente: Texto Digital o Píxeles (OCR).
+        """
+        content_type = file.content_type
         await file.seek(0)
-        data = await file.read(size)
-        await file.seek(0) # Resetear puntero imprescindible
+        file_bytes = await file.read()
+        await file.seek(0) # Reset
+
+        text_content = ""
+
         try:
-            return data.decode('utf-8', errors='ignore')
-        except:
-            return ""
+            # CASO 1: Imágenes (JPG/PNG) -> OCR Directo
+            if  content_type and "image" in content_type:
+                logger.info(f"📸 Imagen detectada: Ejecutando OCR en {file.filename}")
+                image = Image.open(io.BytesIO(file_bytes))
+                text_content = pytesseract.image_to_string(image)
+
+            # CASO 2: PDF -> Intentar texto digital, si falla, OCR
+            elif content_type and "pdf" in content_type:
+                try:
+                    # Intento rápido (pypdf o similar)
+                    import PyPDF2
+                    pdf = PyPDF2.PdfReader(io.BytesIO(file_bytes))
+                    text_content = ""
+                    for page in pdf.pages[:2]: # Solo primeras 2 páginas
+                        text_content += page.extract_text() or ""
+                except:
+                     pass
+                
+                # Si el PDF está escaneado (vacío de texto), renderizamos a imagen y OCR
+                if len(text_content) < 50: 
+                    logger.info("📄 PDF Escaneado detectado: Activando OCR de emergencia...")
+                    # Requiere poppler-utils instalado en el Dockerfile
+                    images = convert_from_bytes(file_bytes, first_page=1, last_page=2)
+                    for img in images:
+                        text_content += pytesseract.image_to_string(img)
+
+            # CASO 3: Texto plano / Código
+            else:
+                text_content = file_bytes.decode('utf-8', errors='ignore')
+
+        except Exception as e:
+            logger.error(f"Error en extracción: {e}")
+            return "" # Fail-safe
+
+        # Devolvemos los primeros 2000 caracteres para la IA
+        return text_content[:2000]
 
     def _analyze_content(self, filename: str, text: str) -> str:
         """
