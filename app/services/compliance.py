@@ -4,7 +4,7 @@ import uuid
 import hashlib
 from datetime import datetime, timedelta
 from app.db import supabase
-from app.services.crypto_signer import crypto_signer # Reutilizamos tu motor de firma RSA
+import app.services.crypto_signer as crypto_signer # Reutilizamos tu motor de firma RSA
 from fpdf import FPDF
 
 logger = logging.getLogger("agentshield.compliance")
