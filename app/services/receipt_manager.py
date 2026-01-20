@@ -195,6 +195,11 @@ async def create_forensic_receipt(
         logger.error(f"Failed to persist forensic receipt: {e}")
     
     return receipt_record
+from app.services.estimator import estimate_cost
+import logging
+
+logger = logging.getLogger("agentshield.auditor")
+
 class ReceiptManager:
     async def create_and_sign_receipt(
         self,
@@ -206,22 +211,61 @@ class ReceiptManager:
     ):
         """
         Enterprise Forensics: Creates and signs a receipt in background.
+        Now includes Savings & Gross Cost calculation for ROI.
         """
-        # Mapeamos a la lógica forense existente
+        model_requested = metadata.get("original_model", request_data.get("model", "agentshield-fast"))
+        model_effective = metadata.get("effective_model", response_data.model if hasattr(response_data, "model") else model_requested)
+
+        # 1. Obtener Usage (Tokens)
+        usage = getattr(response_data, "usage", {})
+        if hasattr(usage, "model_dump"):
+            usage = usage.model_dump()
+            
+        prompt_t = usage.get("prompt_tokens", 0)
+        compl_t = usage.get("completion_tokens", 0)
+        total_t = prompt_t + compl_t
+
+        # 2. Calcular Economics (Gross vs Net)
+        cost_real = estimate_cost(model_effective, prompt_t, compl_t)
+        cost_gross = estimate_cost(model_requested, prompt_t, compl_t)
+        savings = max(0, cost_gross - cost_real)
+
+        # 3. Mapear a la lógica forense existente
         transaction_data = {
-            "model_requested": metadata.get("original_model"),
-            "model_delivered": metadata.get("effective_model"),
-            "cost_usd": 0.0, # TODO: Calculate real cost
-            "tokens": {"input": 0, "output": 0},
+            "model_requested": model_requested,
+            "model_delivered": model_effective,
+            "cost_usd": cost_real,
+            "cost_real": cost_real,
+            "cost_gross": cost_gross,
+            "savings_usd": savings,
+            "tokens": {"input": prompt_t, "output": compl_t},
+            "total_tokens": total_t,
             "decision": "ALLOW",
-            "redactions_count": metadata.get("pii_redacted", 0)
+            "redactions_count": metadata.get("pii_redacted_count", 0)
         }
         
-        await create_forensic_receipt(
+        # 4. Enriquecer Recibo Forense con nuevos campos financieros
+        receipt_record = await create_forensic_receipt(
             tenant_id=tenant_id,
-            user_email=user_id, # Usamos ID como identificador
+            user_email=user_id,
             transaction_data=transaction_data,
-            policy_snapshot={"trust_score": metadata.get("trust_score_snapshot")}
+            policy_snapshot={
+                "trust_score": metadata.get("trust_score"),
+                "intent": metadata.get("intent"),
+                "risk_mode": metadata.get("risk_mode")
+            }
         )
+
+        # 5. Insertar campos adicionales en la tabla principal (Audit Finaniero)
+        try:
+            supabase.table("receipts").update({
+                "cost_real": cost_real,
+                "cost_gross": cost_gross,
+                "savings_usd": savings,
+                "model_requested": model_requested,
+                "model_effective": model_effective
+            }).eq("id", receipt_record["id"]).execute()
+        except Exception as e:
+            logger.error(f"Failed to update financial audit fields: {e}")
 
 receipt_manager = ReceiptManager()

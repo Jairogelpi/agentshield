@@ -11,6 +11,7 @@ from app.services.pii_guard import pii_guard
 from app.services.carbon import carbon_governor
 from app.services.llm_gateway import execute_with_resilience
 from app.services.receipt_manager import receipt_manager
+from app.services.event_bus import event_bus
 from app.schema import DecisionContext
 
 router = APIRouter()
@@ -83,6 +84,15 @@ async def universal_proxy(
             reason="Security Block: High Sensitivity PII detected",
             event_type="PII_BLOCK"
         )
+        background_tasks.add_task(
+            event_bus.publish,
+            ctx.tenant_id,
+            "PII_BLOCKED",
+            "CRITICAL",
+            {"findings": pii_result.get("findings_count")},
+            actor_id=ctx.user_id,
+            trace_id=ctx.trace_id
+        )
         raise HTTPException(400, "🛡️ AgentShield Security: Envío bloqueado por datos altamente sensibles.")
     
     if pii_result.get("changed"):
@@ -97,6 +107,15 @@ async def universal_proxy(
             reason="Security Warning: PII redacted automatically",
             event_type="PII_REDACT"
         )
+        background_tasks.add_task(
+            event_bus.publish,
+            ctx.tenant_id,
+            "PII_REDACT",
+            "WARNING",
+            {"findings": pii_result.get("findings_count")},
+            actor_id=ctx.user_id,
+            trace_id=ctx.trace_id
+        )
 
     # ==============================================================================
     # 5. CARBON GATE (Green Routing)
@@ -104,6 +123,22 @@ async def universal_proxy(
     # Solo aplicamos si el motor de riesgo no ha degradado ya el modelo
     if ctx.effective_model == ctx.requested_model:
         ctx = await carbon_governor.check_budget_and_route(ctx)
+
+    # ==============================================================================
+    # 5.5 BUDGET GATE (Velocity & Balance)
+    # ==============================================================================
+    # can_spend, limit_msg = await limiter.check_velocity_and_budget(identity)
+    # if not can_spend:
+    #     background_tasks.add_task(
+    #         event_bus.publish,
+    #         ctx.tenant_id,
+    #         "BUDGET_EXCEEDED",
+    #         "WARNING",
+    #         {"message": "Budget or Rate Limit Reached"},
+    #         actor_id=ctx.user_id,
+    #         trace_id=ctx.trace_id
+    #     )
+    #     raise HTTPException(429, detail=f"📉 Budget/Rate Limit Exceeded")
 
     # ==============================================================================
     # 6. EXECUTION ROUTER

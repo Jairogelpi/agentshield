@@ -1,8 +1,5 @@
-# agentshield_core/app/services/trust_system.py
-import logging
-import json
-from typing import Optional, Dict, Any
 from app.db import redis_client, supabase
+from app.services.event_bus import event_bus
 
 logger = logging.getLogger("agentshield.trust")
 
@@ -138,5 +135,23 @@ class TrustSystem:
             
         except Exception as e:
             logger.error(f"Failed to persist trust event to DB: {e}")
+
+        # 4. Sistema Inmunológico (Event Bus)
+        if delta < 0:
+            severity = "CRITICAL" if final_score < 30 else "WARNING"
+            import asyncio
+            asyncio.create_task(event_bus.publish(
+                tenant_id=tenant_id,
+                event_type="TRUST_SCORE_DROP",
+                severity=severity,
+                details={
+                    "old_score": results[-1] - delta, # Aproximación rápida
+                    "new_score": final_score,
+                    "delta": delta,
+                    "reason": reason
+                },
+                actor_id=user_id,
+                trace_id=trace_id
+            ))
 
 trust_system = TrustSystem()

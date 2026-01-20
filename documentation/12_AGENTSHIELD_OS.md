@@ -178,3 +178,18 @@ AgentShield gestiona la reputación del usuario para un gobierno justo.
 - **Right to Forget**: Purga quirúrgica de PII manteniendo la integridad financiera del tenant.
 - **Instant Certification**: Generación de certificados PDF firmados criptográficamente para auditorías.
 - **Audit Ledger**: Cada acción de gobierno queda sellada y vinculada a un certificado inmutable.
+
+## 12. Sistema Inmunológico (Event Bus & SOC) 🚨
+AgentShield no solo observa; reacciona en tiempo real a las amenazas.
+- **Event Bus**: Log centralizado hich-speed para eventos de seguridad (PII_BLOCKED, TRUST_DROP).
+- **Automated Playbooks**: Reglas de reacción inmediata (ej: Si hay PII crítica -> Degradar modelo automáticamente).
+- **Multichannel Alerts**: Notificaciones instantáneas a Slack, Teams o Webhooks personalizados para el equipo de SecOps.
+
+## 13. Enterprise Internal Invoicing (Chargeback) 💰
+AgentShield transforma la IA de un "coste central" a un modelo de "pago por uso responsable" entre departamentos.
+- **Gross vs Net Audit**: Cada transacción registra el coste del modelo original pedido y el ahorro generado por AgentShield.
+- **Monthly Chargeback PDF**: Facturas profesionales generadas automáticamente para cada centro de coste.
+- **Knowledge Royalties**: Los departamentos que aportan conocimiento (RAG/Docs) pueden recibir créditos que compensan su gasto.
+
+---
+**AgentShield OS: El Soberano de la IA Empresarial.**
