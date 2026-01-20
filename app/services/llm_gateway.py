@@ -8,7 +8,11 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 
 # Configuración de Modelos y sus Equivalencias (Fallback Chains)
 # En producción, esto vendría de tu DB o Redis
-MODEL_CHAINS = {
+from app.db import redis_client, supabase
+import json
+
+# Configuración por defecto (Fallback) solo si la DB está vacía
+DEFAULT_CHAINS = {
     # Tier: "Smart" -> Prioriza inteligencia (GPT-4 class)
     "agentshield-smart": [
         {"provider": "openai", "model": "gpt-4o", "timeout": 20},     # Primario
@@ -22,6 +26,27 @@ MODEL_CHAINS = {
         {"provider": "openai", "model": "gpt-3.5-turbo", "timeout": 10}
     ]
 }
+
+async def get_dynamic_config():
+    """Carga configuración viva desde Redis/DB"""
+    try:
+        # 1. Intentar Redis
+        cached = await redis_client.get("config:model_chains")
+        if cached:
+            return json.loads(cached)
+        
+        # 2. Intentar DB (Tabla system_config)
+        # Asume que existe una tabla 'system_config' con {key: str, value: json}
+        res = supabase.table("system_config").select("value").eq("key", "model_chains").single().execute()
+        if res.data:
+            config = res.data['value']
+            # Guardar en Redis por 5 minutos
+            await redis_client.setex("config:model_chains", 300, json.dumps(config)) 
+            return config
+    except Exception as e:
+        logger.warning(f"Config Load Error: {e}")
+
+    return DEFAULT_CHAINS
 
 # Configuración Canary (Para probar cosas nuevas sin riesgo)
 CANARY_CONFIG = {
@@ -122,11 +147,14 @@ async def execute_with_resilience(
     """
     start_time = time.time()
     
-    # 0. Normalizar Tier
-    if tier not in MODEL_CHAINS:
+    # 0. Cargar Configuración Dinámica (DB/Redis)
+    current_chains = await get_dynamic_config()
+    
+    # Normalizar Tier
+    if tier not in current_chains:
         chain = [{"provider": "custom", "model": tier, "timeout": 30}]
     else:
-        chain = MODEL_CHAINS[tier]
+        chain = current_chains[tier]
 
     # 1. CANARY ROUTING
     if CANARY_CONFIG["active"] and tier in CANARY_CONFIG["for_tiers"]:

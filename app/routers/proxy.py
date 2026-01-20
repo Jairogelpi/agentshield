@@ -18,6 +18,7 @@ from app.utils import fast_json as json
 from app.services.identity import verify_identity_envelope, VerifiedIdentity
 from app.services.limiter import check_hierarchical_budget, charge_hierarchical_wallets
 from app.services.receipt_manager import create_forensic_receipt
+from app.services.settlement import settlement_service # <--- NUEVO IMPORT
 
 @router.post("/v1/chat/completions")
 async def universal_proxy(
@@ -41,6 +42,66 @@ async def universal_proxy(
     import uuid
     trace_id = f"trc_{uuid.uuid4().hex[:12]}"
     logger.info(f"🔒 Secure Request {trace_id} from {identity.email} (Dept: {identity.dept_id})")
+
+    # ==============================================================================
+    # 🔒 SECURITY: DOMAIN INTEGRITY CHECK (White Label Enforcement)
+    # ==============================================================================
+    
+    # 1. Obtener el Host real (considerando proxies como Vercel/Cloudflare)
+    # Usamos X-Forwarded-Host porque el backend está detrás de un proxy inverso
+    request_host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    
+    # Limpieza: quitamos el puerto si existe (ej: chat.empresa.com:3000 -> chat.empresa.com)
+    if request_host:
+        request_host = request_host.split(':')[0]
+
+    # Solo aplicamos esto si NO es localhost o tu dominio raíz (para facilitar pruebas)
+    if request_host and "localhost" not in request_host and "agentshield.com" not in request_host:
+        
+        # 2. Consultar el Dominio Oficial del Tenant (Cacheado en Redis)
+        cache_key = f"tenant_domain:{tenant_id}"
+        official_domain = await redis_client.get(cache_key)
+        
+        if not official_domain:
+            # Fallback a Base de Datos (Si no está en caché)
+            res = supabase.table("tenants")\
+                .select("custom_domain, slug")\
+                .eq("id", tenant_id)\
+                .single()\
+                .execute()
+            
+            # Si tiene dominio custom, lo usamos. 
+            # Si no, construimos el subdominio gestionado basado en el slug.
+            custom = res.data.get('custom_domain')
+            slug = res.data.get('slug')
+            
+            if custom:
+                official_domain = custom
+            elif slug:
+                # El dominio oficial para un mode gestionado es slug + dominio base
+                # TODO: Mover 'agentshield.com' a config global
+                official_domain = f"{slug}.agentshield.com"
+            else:
+                official_domain = "none"
+
+            # Guardamos en Redis por 1 hora
+            await redis_client.setex(cache_key, 3600, official_domain)
+            
+        if isinstance(official_domain, bytes):
+            official_domain = official_domain.decode('utf-8')
+
+        # 3. EL MARTILLO DE SEGURIDAD 🔨
+        if official_domain != "none" and official_domain != request_host:
+            logger.critical(
+                f"🚨 SECURITY ALERT: Domain Spoofing Attempt.\n"
+                f"User: {identity.email}\n"
+                f"Tenant Domain: {official_domain}\n"
+                f"Request Origin: {request_host}"
+            )
+            raise HTTPException(
+                status_code=403, 
+                detail="Security Domain Mismatch. Access denied from this origin."
+            )
 
     # 2. AUTODESCUBRIMIENTO (La Magia)
     # Buscamos la configuración específica para esta función/script del cliente
@@ -434,11 +495,14 @@ async def universal_proxy(
 
         # Coste REAL (Input + Output)
         total_tokens = input_tokens + output_tokens
-        real_cost = await estimator.estimate_cost(
+        base_real_cost = await estimator.estimate_cost(
             model=target_model, 
             task_type="COMPLETION", 
             input_unit_count=total_tokens
         )
+        
+        # APLICAR PENALTY MULTIPLIER (CFO Rule)
+        real_cost = base_real_cost * semantic_markup
         
         # Enviamos al sistema central de facturación (Analytics + Worker)
         # IMPORTANTE: Pasamos function_id en metadata para que el worker actualice el presupuesto fantasma
@@ -455,13 +519,16 @@ async def universal_proxy(
             "applied_rule": policy_result.violation_msg or "DEFAULT_ALLOW_POLICY",
             "decision": policy_result.action,
             "reason": f"Evaluation Result: {policy_result.action}. Shadow hits: {len(policy_result.shadow_hits)}",
-            "remediation": "Review policy configuration" if policy_result.action == "BLOCK" else "None required"
+            "remediation": "Review policy configuration" if policy_result.action == "BLOCK" else "None required",
+            "governance_hash": policy_hash
         }
 
         tx_data = {
             "model_requested": original_model,
             "model_delivered": target_model, 
             "cost_usd": real_cost,
+            "markup_applied": semantic_markup,
+            "semantic_intent": intent,
             "tokens": {"input": input_tokens, "output": output_tokens},
             "decision": policy_result.action, # "ALLOW" | "DOWNGRADE"
             "policy_proof": policy_proof, # <--- The "Policy-Proof" Evidence
@@ -485,7 +552,35 @@ async def universal_proxy(
                 transaction_data=tx_data,
                 policy_snapshot=policy_snapshot,
                 trace_id=trace_id # 🔗 ESLABÓN PERDIDO CONECTADO
-            )
+                )
+        )
+
+        # ⚖️ KNOWLEDGE ROYALTIES (ECONOMY)
+        # Extraemos IDs de documentos usados si fue una respuesta RAG
+        # Litellm/Gateway debe pasar esto en 'metadata' o en un campo custom del mensaje
+        try:
+             # Heurística: Si hay citations o metadatos de RAG
+             # Asumimos que response_obj tiene acceso a estos metadatos.
+             # En una impl real, execute_with_resilience devuelve un objeto rico.
+             # Simulamos extracción para la demo:
+             used_docs_ids = []
+             if hasattr(response_obj, 'metadata') and response_obj.metadata:
+                 used_docs_ids = response_obj.metadata.get('rag_sources', [])
+             
+             # Fallback: Check si response es dict (litellm a veces devuelve dict)
+             if isinstance(response_obj, dict):
+                 used_docs_ids = response_obj.get('metadata', {}).get('rag_sources', [])
+
+             if used_docs_ids:
+                 background_tasks.add_task(
+                    settlement_service.distribute_knowledge_royalties,
+                    tenant_id=tenant_id,
+                    buyer_user_id=identity.user_id,
+                    used_document_ids=used_docs_ids,
+                    total_cost_of_query=real_cost
+                 )
+        except Exception as e:
+            logger.warning(f"Failed to trigger royalties: {e}")
         )
 
         await record_transaction(

@@ -106,28 +106,78 @@ class ToolGovernor:
         return sanitized_calls
 
     async def _evaluate_policy(self, identity: VerifiedIdentity, tool_name: str, args: Dict) -> ToolDecision:
-        # Lógica para buscar en 'tool_definitions' y 'tool_policies'
-        # En una impl real:
-        # tool_def = supabase.table("tool_definitions").select("*").eq("name", tool_name).execute()
-        # policies = supabase.table("tool_policies").select("*").eq("tool_id", tool_def.id).execute()
-        
-        # Para DEMO rápida y robustez sin DB poblada:
-        
-        # Ejemplo Hardcodeado para demostración solicitada:
-        if tool_name == "transfer_funds" or tool_name == "stripe_charge":
-            amount = args.get("amount", 0)
-            # Regla de prueba: > 1000 requiere aprobación
-            if isinstance(amount, (int, float)) and amount > 500:
-                return ToolDecision(action="REQUIRE_APPROVAL", reason="Amount > $500 exceeds auto-approval limit")
+        """
+        Busca reglas dinámicas en la base de datos. Cero hardcoding.
+        """
+        try:
+            # 1. Buscar políticas activas para esta herramienta
+            # Query optimizada: Trae políticas para el Tenant + Tool name
+            # Nota: Esto asume una relación o que tool_policies tiene un campo 'tool_name' o hacemos join.
+            # Para eficiencia, asumamos que 'tool_name' está desnormalizado o hacemos join con definitions.
+            # Usamos una vista o query directa.
             
-        if tool_name == "database_delete":
-             return ToolDecision(action="BLOCK", reason="Destructive action strictly prohibited")
+            # 1. Buscar políticas activas para esta herramienta
+            # FIX: Usamos "Embedding Resource" para filtrar por nombre de herramienta en la tabla relacionada
+            # tool_policies -> tool_definitions (filtrar por name)
             
-        # Role check mock
-        if identity.role and "intern" in identity.role.lower():
-            if tool_name in ["deploy_prod", "access_prod_db"]:
-                return ToolDecision(action="BLOCK", reason="Interns cannot modify Production")
+            policies_res = supabase.table("tool_policies")\
+                .select("*, tool_definitions!inner(name)")\
+                .eq("tool_definitions.name", tool_name)\
+                .eq("tenant_id", identity.tenant_id)\
+                .eq("is_active", True)\
+                .order("priority", desc=True)\
+                .execute()
+            
+            policies = policies_res.data or []
+            
+            # 2. Iterar políticas
+            for p in policies:
+                # A. Filtro de Rol
+                if p.get('target_role') and p['target_role'] != identity.role:
+                    continue
+                    
+                # B. Filtro de Departamento
+                if p.get('target_dept_id') and str(p['target_dept_id']) != str(identity.dept_id or ""):
+                     continue
                 
-        return ToolDecision(action="ALLOW", reason="Policy Check OK")
+                # C. Evaluar Argumentos (Logic Engine Simple)
+                # Regla en DB: {"amount": {"gt": 500}}
+                rule_logic = p.get('argument_rules', {})
+                violation_found = False
+                
+                if not rule_logic:
+                    # Si no hay reglas de argumentos, la política aplica siempre (ej: Bloquear herramienta para Becarios)
+                    violation_found = True
+                else:
+                    # Verificar condiciones
+                    for arg_key, conditions in rule_logic.items():
+                        arg_val = args.get(arg_key)
+                        if arg_val is None: continue # Argumento no presente, skip check? O fail? (Default permissive here)
+                        
+                        # Soporte básico: gt (greater than), lt (less than), eq (equal)
+                        if isinstance(conditions, dict):
+                            if "gt" in conditions and isinstance(arg_val, (int, float)):
+                                if arg_val > conditions["gt"]: violation_found = True
+                            if "lt" in conditions and isinstance(arg_val, (int, float)):
+                                if arg_val < conditions["lt"]: violation_found = True
+                        elif conditions == arg_val:
+                             # Igualdad directa
+                             violation_found = True
+                
+                if violation_found:
+                    return ToolDecision(
+                        action=p['action'], 
+                        reason=f"Policy triggered: {p.get('name', 'Rule Violation')}",
+                        approval_id=p.get('approval_group') # Grupo que debe aprobar si es REQUIRE_APPROVAL
+                    )
+
+            # 4. Default Allow
+            return ToolDecision(action="ALLOW", reason="No restrictions found")
+            
+        except Exception as e:
+            logger.error(f"Policy DB Error: {e}")
+            # Fail Safe: Block on DB error? Or Allow?
+            # Security First -> Block if we can't verify policies.
+            return ToolDecision(action="BLOCK", reason="Policy Verification System Unavailable")
 
 governor = ToolGovernor()

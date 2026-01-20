@@ -7,6 +7,8 @@ import asyncio
 
 logger = logging.getLogger("agentshield.policy")
 
+from app.services.trust_system import trust_system
+
 class PolicyContext(BaseModel):
     user_id: str
     user_email: str
@@ -15,6 +17,64 @@ class PolicyContext(BaseModel):
     model: str
     estimated_cost: float
     intent: str = "general"
+    trust_score: int = 100 # Nuevo campo de confianza dinámico
+
+# ... (Existing code omitted for brevity) ...
+
+async def log_policy_events(tenant_id: str, context: PolicyContext, result: PolicyResult):
+    """
+    Guarda eventos y penaliza automáticamente violaciones.
+    """
+    events = []
+    
+    # 1. Loguear Shadow Hits
+    for p in result.shadow_hits:
+        events.append({
+            "tenant_id": tenant_id,
+            "policy_id": p['id'],
+            "user_email": context.user_email,
+            "event_type": "SHADOW_HIT",
+            "action_taken": "LOGGED_ONLY",
+            "metadata": {
+                "cost": context.estimated_cost,
+                "model": context.model,
+                "intent": context.intent,
+                "policy_name": p['name'],
+                "user_trust_score": context.trust_score
+            }
+        })
+        
+    # 2. Loguear Enforcement (si hubo acción real)
+    if result.action in ['BLOCK', 'DOWNGRADE']:
+        events.append({
+            "tenant_id": tenant_id,
+            "policy_id": None, 
+            "user_email": context.user_email,
+            "event_type": "ENFORCEMENT",
+            "action_taken": result.action,
+            "metadata": {"reason": result.violation_msg}
+        })
+
+        # 3. PENALIZACIÓN AUTOMÁTICA (Integración Trust Engine)
+        if result.action == 'BLOCK':
+            # Si el usuario violó una política hard (BLOCK), reducimos confianza.
+            try:
+                # Ejecutamos asíncronamente (Fuego y Olvido, o await si queremos consistencia)
+                # Dado que log_policy_events se llama como Background Task usualmente:
+                await trust_system.adjust_score(
+                    tenant_id=tenant_id,
+                    user_id=context.user_id,
+                    amount=-5,
+                    reason=f"Policy Violation: {result.violation_msg}"
+                )
+            except Exception as e:
+                logger.error(f"Trust Penalty Failed: {e}")
+
+    if events:
+        try:
+            supabase.table("policy_events").insert(events).execute()
+        except Exception as e:
+            logger.error(f"Failed to log policy events: {e}")
 
 class PolicyResult(BaseModel):
     should_block: bool = False

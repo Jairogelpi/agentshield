@@ -8,8 +8,15 @@ from app.db import supabase, redis_client
 
 logger = logging.getLogger("agentshield.oracle")
 
-MARKET_URL = "https://openrouter.ai/api/v1/models"
-FOREX_URL = "https://api.frankfurter.app/latest?from=USD&to=EUR"
+import os
+
+MARKET_URL = os.getenv("ORACLE_MARKET_URL", "https://openrouter.ai/api/v1/models")
+FOREX_URL = os.getenv("ORACLE_FOREX_URL", "https://api.frankfurter.app/latest?from=USD&to=EUR")
+
+# Tuning Parameters (Calibración)
+WEIGHT_SLOW = float(os.getenv("ORACLE_WEIGHT_SLOW", "0.7"))
+WEIGHT_FAST = float(os.getenv("ORACLE_WEIGHT_FAST", "0.3"))
+VOLATILITY_BUFFER = float(os.getenv("ORACLE_VOLATILITY_BUFFER", "1.05"))
 
 async def get_real_exchange_rate() -> float:
     """Obtiene el tipo de cambio USD -> EUR en tiempo real"""
@@ -60,7 +67,7 @@ async def get_smart_efficiency_factor() -> float:
             # Acción: Usar un promedio ponderado (70% lento / 30% rápido).
             # Razón: No bajamos precios de inmediato. Retenemos el beneficio extra
             # por si esto es solo un pico temporal de suerte.
-            final_factor = (ratio_slow * 0.7) + (ratio_fast * 0.3)
+            final_factor = (ratio_slow * WEIGHT_SLOW) + (ratio_fast * WEIGHT_FAST)
             trend = "📈 IMPROVING (Profit Taking Mode)"
 
         logger.info(f"🧠 Smart Efficiency Audit:")
@@ -109,7 +116,7 @@ async def update_market_rules():
                 # --- FACTOR DE SEGURIDAD DE VOLATILIDAD (NUEVO) ---
                 # Si el mercado es volátil, añadimos un pequeño buffer del 5% al coste
                 # para cubrir fluctuaciones de divisa intradía.
-                volatility_buffer = 1.05 
+                volatility_buffer = VOLATILITY_BUFFER 
                 
                 total_cost_usd = ((1_000_000 * effective_p_in) + (300_000 * p_out)) * volatility_buffer
                 

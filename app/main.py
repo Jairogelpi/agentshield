@@ -17,7 +17,8 @@ async def global_security_guard(request: Request):
     # /health: Necesario para Render/K8s
     # /docs y /openapi.json: Para que tú veas la docu (puedes quitarlo en prod)
     # /v1/webhook: Webhooks de terceros (ej. Stripe/Brevo) que no envían Bearer
-    whitelist = ["/health", "/docs", "/openapi.json", "/v1/webhook"]
+    # /v1/public: Public Tenant Config (White Label)
+    whitelist = ["/health", "/docs", "/openapi.json", "/v1/webhook", "/v1/public/tenant-config"]
     
     if request.url.path in whitelist:
         return # Pase usted
