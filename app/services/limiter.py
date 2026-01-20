@@ -75,3 +75,29 @@ async def charge_hierarchical_wallets(identity: VerifiedIdentity, cost_real: flo
         logger.error(f"Wallet Charge Error: {e}")
         # Aquí deberíamos tener una cola de reintento o inserción directa en DB 'wallet_transactions'
         # para consistencia eventual.
+async def check_velocity_and_budget(identity: VerifiedIdentity) -> tuple[bool, str]:
+    """
+    Decision Graph Node: Budget & Velocity.
+    Combina el chequeo de fondos con límites de velocidad (Rate Limiting).
+    """
+    # 1. Budget Check (Pre-estimated cost 0.01 fixed for fast check)
+    allowed, reason = await check_hierarchical_budget(identity, 0.01)
+    if not allowed:
+        return False, reason
+        
+    # 2. Velocity Check (Redis Fixed Window 1 min)
+    key = f"limit:velocity:{identity.user_id}"
+    count = await redis_client.incr(key)
+    if count == 1:
+        await redis_client.expire(key, 60)
+        
+    if count > 50: # Max 50 RPM per user
+        return False, "Velocity Limit Exceeded (Burst Protection)"
+        
+    return True, "OK"
+
+class LimiterService:
+    async def check_velocity_and_budget(self, identity: VerifiedIdentity):
+        return await check_velocity_and_budget(identity)
+
+limiter = LimiterService()

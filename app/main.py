@@ -292,6 +292,8 @@ app.include_router(admin_chat.router)
 app.include_router(tools.router) 
 app.include_router(images.router) # 🎨 DALL-E
 app.include_router(forensics.router) # 🕵️ CSI Mode
+from app.routers import trust
+app.include_router(trust.router)
 # app.include_router(feedback.router) # 🧠 Learning Loop
 
 # Endpoint de salud para Render (ping)

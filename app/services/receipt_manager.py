@@ -195,3 +195,33 @@ async def create_forensic_receipt(
         logger.error(f"Failed to persist forensic receipt: {e}")
     
     return receipt_record
+class ReceiptManager:
+    async def create_and_sign_receipt(
+        self,
+        tenant_id: str,
+        user_id: str,
+        request_data: dict,
+        response_data: Any,
+        metadata: dict
+    ):
+        """
+        Enterprise Forensics: Creates and signs a receipt in background.
+        """
+        # Mapeamos a la lógica forense existente
+        transaction_data = {
+            "model_requested": metadata.get("original_model"),
+            "model_delivered": metadata.get("effective_model"),
+            "cost_usd": 0.0, # TODO: Calculate real cost
+            "tokens": {"input": 0, "output": 0},
+            "decision": "ALLOW",
+            "redactions_count": metadata.get("pii_redacted", 0)
+        }
+        
+        await create_forensic_receipt(
+            tenant_id=tenant_id,
+            user_email=user_id, # Usamos ID como identificador
+            transaction_data=transaction_data,
+            policy_snapshot={"trust_score": metadata.get("trust_score_snapshot")}
+        )
+
+receipt_manager = ReceiptManager()

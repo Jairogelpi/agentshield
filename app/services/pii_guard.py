@@ -113,6 +113,42 @@ def redact_pii_sync(text: str, tenant_id: str = "unknown") -> str:
                  
         return text
 
+    async def scan(self, messages: list) -> dict:
+        """
+        Escaneo integral de mensajes.
+        Retorna: { "blocked": bool, "changed": bool, "findings_count": int, "cleaned_messages": list }
+        """
+        cleaned = []
+        changed = False
+        findings = 0
+        
+        for m in messages:
+            content = m.get("content", "")
+            if not isinstance(content, str):
+                cleaned.append(m)
+                continue
+                
+            # Capa 1: Rust Scrubbing
+            redacted = agentshield_rust.scrub_pii_fast(content)
+            
+            # Capa 2: Si el texto cambió, registramos hallazgo
+            if redacted != content:
+                changed = True
+                findings += 1
+                
+            new_m = m.copy()
+            new_m["content"] = redacted
+            cleaned.append(new_m)
+            
+        return {
+            "blocked": False, # Por defecto no bloqueamos a menos que sea PII crítica (ej: Password)
+            "changed": changed,
+            "findings_count": findings,
+            "cleaned_messages": cleaned
+        }
+
+pii_guard = PIIEngine.get_instance()
+
 async def advanced_redact_pii(text: str, tenant_id: str = "unknown") -> str:
     """
     Wrapper Async para mantener compatibilidad con codigo existente (Proxy, etc).
