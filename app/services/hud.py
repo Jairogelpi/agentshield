@@ -18,7 +18,8 @@ class HudMetrics:
     trust_score: int
     pii_redactions: int
     intent: str
-    role: Optional[str] = None # [NEW] Role field
+    role: Optional[str] = None 
+    active_rules: Optional[list] = None # [NEW] List of strings
 
 def _get_risk_badge(score: int) -> str:
     if score >= 80: return "🟢 LOW"
@@ -71,7 +72,8 @@ def build_structured_event(metrics: HudMetrics) -> str:
                 "model": metrics.model_used,
                 "tokens": metrics.tokens_total,
                 "role": metrics.role 
-            }
+            },
+            "active_rules": metrics.active_rules or [] # [NEW]
         }
     }
     # Formato SSE estándar: event: nombre \n data: json \n\n

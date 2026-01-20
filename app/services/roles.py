@@ -32,7 +32,11 @@ class RoleFabric:
                 .maybe_single()\
                 .execute()
             
+            # Make sure we parse metadata if it exists
             role = res.data or self._get_default_role()
+            if 'metadata' not in role or not role['metadata']:
+                role['metadata'] = {"active_rules": ["Standard Security"]}
+                
         except Exception as e:
             logging.error(f"Error fetching role: {e}")
             role = self._get_default_role()
@@ -47,7 +51,8 @@ class RoleFabric:
             "pii_policy": "REDACT",
             "max_tokens": 2000,
             "department": "General",
-            "function": "Employee"
+            "function": "Employee",
+            "metadata": {"active_rules": ["Baseline Protection"]}
         }
 
 role_fabric = RoleFabric()

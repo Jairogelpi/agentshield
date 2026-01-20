@@ -133,12 +133,14 @@ async def universal_proxy(
     # Metadata para el calculo final
     model_pricing = {"model": ctx.effective_model, "provider": "openai", "price_in": 0.01, "price_out": 0.03}
     role_name = f"{active_role.get('department')} > {active_role.get('function')}"
+    active_rules = active_role.get('metadata', {}).get('active_rules', [])
     
     user_context = {
         "trust_score": trust_policy['trust_score'], 
         "pii_redactions": pii_result.get("findings_count", 0),
         "intent": ctx.intent,
-        "role_name": role_name # Pass for HUD
+        "role_name": role_name,
+        "active_rules": active_rules # Pass for HUD
     }
     input_tokens_est = int(len(user_prompt)/4) 
 
@@ -194,7 +196,8 @@ async def universal_proxy(
             trust_score=context['trust_score'],
             pii_redactions=context['pii_redactions'],
             intent=context['intent'],
-            role=context['role_name'] # [NEW]
+            role=context['role_name'],
+            active_rules=context['active_rules'] # [NEW]
         )
 
         # D. Generamos la HUD Card (Canal Visual)
