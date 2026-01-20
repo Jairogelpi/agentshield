@@ -1,7 +1,6 @@
 # app/routers/embeddings.py
 from fastapi import APIRouter, Request, HTTPException, Depends, BackgroundTasks, UploadFile
 from app.services.identity import verify_identity_envelope, VerifiedIdentity
-from app.schema import AgentShieldContext
 from litellm import embedding
 import time
 import logging
@@ -18,7 +17,7 @@ from app.services.vault import vault
 async def proxy_embeddings(
     request: Request,
     background_tasks: BackgroundTasks,
-    ctx: AgentShieldContext = Depends(verify_identity_envelope)
+    ctx: VerifiedIdentity = Depends(verify_identity_envelope)
 ):
     """
     Endpoint crítico para RAG. 
