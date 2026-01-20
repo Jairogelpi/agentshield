@@ -94,7 +94,8 @@ async def signup_tenant(req: SignupRequest):
             "instructions": "Usa tu endpoint seguro: https://getagentshield.com",
             "message": "Guarda esta clave en lugar seguro."
         }
-        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create tenant: {str(e)}")
 
 # --- AUTH HELPERS FOR ONBOARDING ---
 from fastapi import Security, Depends
