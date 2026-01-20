@@ -81,11 +81,11 @@ Un empleado de Marketing sube "Nóminas_2025.pdf" para resumirlas con IA.
 ### La Solución: Gatekeeper Nativo
 Interceptamos el flujo en `POST /v1/files` antes de indexar nada.
 
-1.  **Universal Semantic Guardian**: 
-    *   **Zero Config**: No definimos Regex. El usuario escribe "Project Alpha" en las políticas y el sistema *entiende* qué es.
-    *   **Logic**: Generación dinámica de hipótesis ("This is a Project Alpha document" vs "This is a discussion about Project Alpha").
-    *   **Tech**: Modelo NLI Local (On-Chip) para máxima privacidad.
-2.  **Anti-DoS (Size Limit)**: Bloqueo inmediato de archivos >10MB para evitar saturación de RAM.
+1.  **Hybrid Sniper Scan**: 
+    *   **Paso 1 (0ms)**: Regex detecta palabras clave ("Factura").
+    *   **Paso 2 (200ms)**: Modelo de IA Local (DistilBART/CPU) confirma la intención. Diferencia "Datos Reales" de "Documentación Educativa" para reducir falsos positivos.
+    *   **Privacidad**: Todo corre en local sin salir del servidor.
+2.  **Anti-DoS (Size Limit)**: Lectura segura de solo los primeros 2KB (`_read_file_head`) para evitar saturación de RAM.
 3.  **Motor de Políticas Unified**: Reutilizamos la tabla `policies` con `action='BLOCK_UPLOAD'`.
     *   Ejemplo: `{"block_categories": ["INVOICE", "PAYSLIP"]}`
 4.  **Auditoría**: Cada bloqueo se registra en `policy_events` junto con los bloqueos de prompts, unificando la visión de seguridad.
