@@ -1,12 +1,15 @@
 # agentshield_core/app/routers/onboarding.py
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends, Security
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from datetime import datetime
 from pydantic import BaseModel
 from app.db import supabase
 from app.models import TenantRegion
 import secrets
 import hashlib
+import logging
 
+logger = logging.getLogger("agentshield.onboarding")
 router = APIRouter(tags=["Onboarding"])
 
 class SignupRequest(BaseModel):
@@ -111,8 +114,6 @@ async def signup_tenant(req: SignupRequest, authenticated_user_id: str = Depends
         raise HTTPException(status_code=500, detail=f"Database Alignment Error: {str(e)}")
 
 # --- AUTH HELPERS FOR ONBOARDING ---
-from fastapi import Security, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 security = HTTPBearer()
 
 async def get_user_id_from_jwt(credentials: HTTPAuthorizationCredentials = Security(security)):
