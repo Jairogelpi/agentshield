@@ -194,7 +194,7 @@ async def update_market_rules():
 
         # Invalidad caché distribuida
         await redis_client.delete("system_config:arbitrage_rules")
-        await redis_client.set("system_config:market_prices", json.encode(model_prices), ex=3600)
+        await redis_client.set("system_config:market_prices", json.dumps(model_prices), ex=3600)
         
         logger.info(f"✅ Reglas Financieras Recalibradas. {len(model_prices)} modelos indexados para cobro dinámico.")
         return new_rules
