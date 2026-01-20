@@ -139,6 +139,29 @@ class VaultService:
             logger.error(f"Secure search failed: {e}")
             return []
 
+    async def search_legal_docs(self, query: str, framework: str, limit: int = 3):
+        """
+        RAG Legal: Busca en la base de conocimientos regulatoria.
+        """
+        try:
+            # 1. Vectorizar Query
+            resp = litellm_embedding(model="text-embedding-3-small", input=query)
+            query_vec = resp['data'][0]['embedding']
+            
+            # 2. RPC Call
+            params = {
+                "query_embedding": query_vec,
+                "match_threshold": 0.4, # Umbral más bajo para textos legales complejos
+                "match_count": limit,
+                "filter_framework": framework
+            }
+            
+            res = supabase.rpc("match_legal_docs", params).execute()
+            return res.data or []
+            
+        except Exception as e:
+            logger.error(f"Legal RAG Search failed: {e}")
+            return []
     def _smart_chunking(self, text: str, size=1000, overlap=100):
         # Implementación simple de chunking.
         if not text: return []

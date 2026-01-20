@@ -253,7 +253,7 @@ app.add_middleware(
 
 # 2. Conectar Routers
 from app.routers import proxy, dashboard, authorize, onboarding, compliance, analytics, audit, receipt, embeddings, feedback, public_config
-from app.routers import admin_chat, tools, images, forensics, trust
+from app.routers import admin_chat, tools, images, forensics, trust, admin_roles
 
 app.include_router(public_config.router) # [NEW] Zero-Touch Config
 app.include_router(authorize.router)
@@ -272,6 +272,7 @@ app.include_router(tools.router)
 app.include_router(images.router)
 app.include_router(forensics.router)
 app.include_router(trust.router)
+app.include_router(admin_roles.router) # [NEW] AI Role Architect
 
 # Endpoint de salud para Render (ping)
 # Endpoint de salud para Render (Deep Health Check)

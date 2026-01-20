@@ -92,12 +92,13 @@ from litellm import acompletion # OVERRIDE IMPORT for async
     wait=wait_exponential(multiplier=1, min=1, max=10),
     retry=retry_if_exception_type(Exception) 
 )
-async def _call_provider_async(model: str, messages: list, timeout: int, temperature: float = 0.7):
+async def _call_provider_async(model: str, messages: list, timeout: int, temperature: float = 0.7, stream: bool = False):
     return await acompletion(
         model=model,
         messages=messages,
         timeout=timeout,
-        temperature=temperature
+        temperature=temperature,
+        stream=stream
     )
 
 from app.db import redis_client
@@ -140,8 +141,9 @@ async def execute_with_resilience(
     tier: str, 
     messages: List[Dict[str, str]], 
     user_id: str,
-    temperature: float = 0.7
-) -> Dict[str, Any]:
+    temperature: float = 0.7,
+    stream: bool = False
+) -> Any:
     """
     Ejecuta la llamada LLM con estrategias Enterprise: Circuit Breaker, Canary, Retry, Fallback.
     """
@@ -165,7 +167,8 @@ async def execute_with_resilience(
                     model=CANARY_CONFIG["target_model"], 
                     messages=messages, 
                     timeout=30,
-                    temperature=temperature
+                    temperature=temperature,
+                    stream=stream
                 )
                 return response
             except Exception as e:
@@ -189,7 +192,8 @@ async def execute_with_resilience(
                 model=node["model"], 
                 messages=messages, 
                 timeout=node["timeout"],
-                temperature=temperature
+                temperature=temperature,
+                stream=stream
             )
             
             # Éxito: Resetear fallo

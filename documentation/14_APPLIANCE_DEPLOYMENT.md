@@ -1,49 +1,55 @@
-# AgentShield Appliance Deployment Guide
+# AgentShield Deployment Guide: Hybrid Cloud & Sovereign
 
-This guide describes how to deploy AgentShield as a self-contained "AI Operating System" using Docker Compose. This configuration bundles the Frontend (OpenWebUI), Backend (AgentShield Core), and Databases (Redis/Postgres).
+This guide describes how to deploy AgentShield in two modes: **SaaS** (Managed Cloud) and **Sovereign** (On-Premise/Appliance).
 
-## Architecture
+## Hybrid Sales Strategy
+AgentShield supports a dual-tier deployment model leveraging the same codebase:
 
-```mermaid
-graph TD
-    User[Employee] -->|Web Browser| Frontend[OpenWebUI :3000]
-    Frontend -->|OpenAI Protocol| Backend[AgentShield Core :8000]
-    Backend -->|Check Policy| DB[(PostgreSQL)]
-    Backend -->|Check Cache| Redis[(Redis)]
-    Backend -->|Arbitrage & Route| AI[External AI Providers]
-```
+1.  **AgentShield Cloud (SaaS)**:
+    *   **Infrastructure**: Hosted on Render/Vercel (Managed by You).
+    *   **Tenancy**: Multi-Tenant (Standard) or Dedicated Instance (Enterprise).
+    *   **Ideal For**: Startups, Agencies, Mid-Market.
+    *   **Pricing**: Monthly Subscription + Usage.
 
-## Quick Start
+2.  **AgentShield Sovereign (On-Premise)**:
+    *   **Infrastructure**: Docker binary installed on Client's Server.
+    *   **Tenancy**: Single-Tenant (Physically Isolated).
+    *   **Ideal For**: Banks, Government, Health.
+    *   **Pricing**: Annual License ($50k+) + Support.
+
+## Technical Requirements (Critical)
+To run the full **FileGuardian** with OCR (Tesseract) and Local AI (DeBERTa), you must size the infrastructure correctly.
+
+### Minimum Specs (Render/Docker)
+| Component | Minimum RAM | CPU | Notes |
+|-----------|-------------|-----|-------|
+| Core API  | **2 GB**    | 1 vCPU | Required for Tesseract + ONNX Runtime overhead. |
+| Redis     | 256 MB      | Shared | For caching and rate limiting. |
+| Postgres  | 512 MB      | Shared | With pgvector plugin. |
+
+> [!WARNING]
+> Do NOT deploy on Render "Free" or "Starter" (512MB) plans. The OCR engine will cause OOM (Out Of Memory) crashes during file uploads. Use "Standard" (2GB+) instances.
+
+## Dedicated SaaS Configuration (Private Cloud)
+To offer a "Private Cloud" experience without on-premise friction:
+1.  Deploy a new backend instance on Render (e.g., `api-bank-vip.onrender.com`).
+2.  Update the **Master Database**:
+    ```sql
+    UPDATE tenants SET backend_api_url = 'https://api-bank-vip.onrender.com/v1' WHERE slug = 'banco-vip';
+    ```
+3.  The shared frontend (`app.agentshield.ai`) will automatically route traffic to the private instance.
+
+## Deployment Steps (Docker Compose)
+For Sovereign/On-Premise deployments:
 
 1.  **Configure Environment**:
-    Ensure you have your OpenAI/Provider keys ready.
+    Ensure OpenAI/Provider keys and Supabase URL/Key are set in `.env`.
 
 2.  **Deploy**:
     ```bash
-    docker-compose up -d
+    docker-compose up -d --build
     ```
 
 3.  **Access**:
-    - **User Interface**: `http://localhost:3000`
-    - **Admin Dashboard**: `http://localhost:3000/admin`
-
-## Flight Modes (Model Selection)
-
-Users can select these "Models" in the dropdown. AgentShield intercepts them and applies logic:
-
--   **`agentshield-fast`** (Recommended):
-    -   **Behavior:** Aggressive Financial Arbitrage.
-    -   **Logic:** Analyzes prompt complexity. Simple queries go to cheap models (Llama-3, Haiku). Complex queries go to stronger models.
-    -   **Goal:** Maximum Cost Savings (up to 98%).
-
--   **`agentshield-smart`** (Executive/Legal):
-    -   **Behavior:** Direct routing to SOTA models (GPT-4o).
-    -   **Logic:** Bypasses arbitrage engine.
-    -   **Goal:** Maximum Intelligence & Determinism.
-
-## Zero-Trust Security
-
-By default, the Appliance enforces:
--   **PII Scrubbing:** Redacts emails, phones, and credit cards locally.
--   **Entropy Detection:** Blocks high-entropy strings (potentially leaked API keys).
--   **Custom Rules:** Applies tenant-specific blocklists defined in the database.
+    - **Web Interface**: `http://localhost:3000`
+    - **API Docs**: `http://localhost:8000/docs`
