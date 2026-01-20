@@ -99,17 +99,22 @@ jobs:
 
       - name: Install dependencies
         run: |
+          python -m venv .venv
+          source .venv/bin/activate
           python -m pip install --upgrade pip
           pip install maturin pytest pytest-cov pytest-asyncio httpx
           pip install -r requirements.txt
 
       - name: Build Rust Module
         run: |
+          source .venv/bin/activate
           cd rust_module
           maturin develop --release
 
       - name: Run Tests with Coverage
-        run: pytest tests/ -v --cov=app --cov-report=xml --cov-report=term
+        run: |
+          source .venv/bin/activate
+          pytest tests/ -v --cov=app --cov-report=xml --cov-report=term
         env:
           PYTHONPATH: ${{ github.workspace }}
 
@@ -173,12 +178,15 @@ jobs:
 
       - name: Install dependencies
         run: |
+          python -m venv .venv
+          source .venv/bin/activate
           python -m pip install --upgrade pip maturin
           pip install -r requirements.txt
           cd rust_module && maturin develop --release
 
       - name: Start Server & Smoke Test
         run: |
+          source .venv/bin/activate
           # Start server in background
           python -m granian --interface asgi app.main:app --host 0.0.0.0 --port 8000 &
           SERVER_PID=$!
