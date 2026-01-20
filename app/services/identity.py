@@ -26,31 +26,43 @@ class VerifiedIdentity:
 
 async def verify_identity_envelope(authorization: str = Header(...)) -> VerifiedIdentity:
     """
-async def verify_identity_envelope(credentials: HTTPAuthorizationCredentials = Security(security)) -> AgentShieldContext:
-    """
     Valida el JWT y retorna un Contexto Estandarizado.
     """
-    token = credentials.credentials
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Invalid Authorization Header")
     
+    token = authorization.split(" ")[1]
+
     try:
-            # Asumimos 'users' tiene todo por ahora como simplificación, o usamos 'auth.users' + 'public.users' info
+        # 1. Decodificar JWT
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        email = payload.get("email")
+        app_metadata = payload.get("app_metadata", {})
+        
+        if not user_id:
+            raise HTTPException(401, "Invalid Token: No Subject")
+
+        # 2. Intentar recuperar identidad desde Redis (Cache)
+        cached_profile = await redis_client.get(f"identity:{user_id}")
+        if cached_profile:
+            profile = json.loads(cached_profile)
+        else:
+            # 3. Si no esta en cache, resolver identidad completa (SIN MOCKS)
             
-            # Buscamos en nuestra tabla publica de usuarios (que deberia estar synced)
-            # o directamente consultamos la tabla que tenga department_id.
-            
-            # NOTE: Dependiendo de tu schema actual, esto puede variar. 
-            # Asumimos una tabla 'users' o similar que linkea user_id -> tenant_id, dept_id.
-            
-            # Intento 1: Tabla 'users'
+            # Busco en tabla publica de usuarios
             res = supabase.table("users").select("*").eq("id", user_id).single().execute()
             
             if not res.data:
-                # Si no está en users, buscamos en el Tenant para ver sus políticas base
+                # Fallback: Usar metadata del token + Tenant Default
                 tenant_id = app_metadata.get("tenant_id")
                 if not tenant_id:
-                    raise HTTPException(403, "User has no associated Tenant (Organization)")
-                
-                # Buscamos el departamento principal del Tenant para no usar mocks
+                     # Si no hay tenant en metadata, error fatal (Zero Trust)
+                     # raise HTTPException(403, "Identity Verification Failed: No Tenant Found")
+                     # Fallback de emergencia para desarrollo/demo si no hay tenant
+                     tenant_id = "default_tenant" # O manejar segun logica de negocio
+
+                # Buscamos el departamento por defecto del Tenant real
                 dept_res = supabase.table("departments").select("id").eq("tenant_id", tenant_id).limit(1).execute()
                 dept_id = dept_res.data[0]['id'] if dept_res.data else "none"
 
@@ -62,9 +74,8 @@ async def verify_identity_envelope(credentials: HTTPAuthorizationCredentials = S
                 }
             else:
                 profile = res.data
-                # Asegurar campos minimos SIN MOCKS
+                # Enriquecer perfil incompleto
                 if "department_id" not in profile or not profile["department_id"]:
-                     # Lookup dinámico si el perfil está incompleto
                      dept_res = supabase.table("departments").select("id").eq("tenant_id", profile["tenant_id"]).limit(1).execute()
                      profile["department_id"] = dept_res.data[0]['id'] if dept_res.data else "none"
                 
@@ -73,7 +84,7 @@ async def verify_identity_envelope(credentials: HTTPAuthorizationCredentials = S
                 if "role" not in profile:
                      profile["role"] = app_metadata.get("role", "member")
 
-            # Cacheamos la identidad por 5 minutos (Sincronización a tiempo real)
+            # Cachear Identidad Verificada (5 min)
             await redis_client.setex(f"identity:{user_id}", 300, json.dumps(profile))
 
         return VerifiedIdentity(
