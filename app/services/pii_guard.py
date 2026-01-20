@@ -132,6 +132,89 @@ class PIIEngine:
 
         return final_text
 
+    async def scan(self, messages: list) -> dict:
+        """
+        Escaneo integral de mensajes.
+        Retorna: { "blocked": bool, "changed": bool, "findings_count": int, "cleaned_messages": list }
+        """
+        import agentshield_rust
+
+        cleaned = []
+        changed = False
+        findings = 0
+
+        for m in messages:
+            content = m.get("content", "")
+            if not isinstance(content, str):
+                cleaned.append(m)
+                continue
+
+            # Capa 1: Rust Scrubbing
+            redacted = agentshield_rust.scrub_pii_fast(content)
+
+            # Capa 2: Entropy Scanning (Zero-Trust for Unknown Secrets)
+            # Detectamos strings con alta entropía (>4.5) que parecen claves/troyanos
+            redacted = self._entropy_scan(redacted)
+
+            # Capa 2b: CUSTOM RULES (Tenant Specific)
+            tenant_id = "unknown"
+
+            # Await the async implementation
+            redacted = await self.apply_custom_rules_async(redacted, tenant_id)
+
+            # Capa 3: Si el texto cambió, registramos hallazgo
+            if redacted != content:
+                changed = True
+                findings += 1
+
+            new_m = m.copy()
+            new_m["content"] = redacted
+            cleaned.append(new_m)
+
+        return {
+            "blocked": False,
+            "changed": changed,
+            "findings_count": findings,
+            "cleaned_messages": cleaned,
+        }
+
+    def _entropy_scan(self, text: str) -> str:
+        """
+        Escanea tokens en busca de anomalías de entropía (Shannon).
+        Un token de lenguaje natural tiene entropía ~2-3.
+        Un secreto (API Key, Hash) tiene > 4.5.
+        """
+        import math
+
+        def shannon_entropy(s):
+            if not s:
+                return 0
+            entropy = 0
+            for x in range(256):
+                p_x = float(s.count(chr(x))) / len(s)
+                if p_x > 0:
+                    entropy += -p_x * math.log(p_x, 2)
+            return entropy
+
+        tokens = text.split()
+        cleaned_tokens = []
+
+        for token in tokens:
+            if len(token) < 8 or token.startswith("http"):
+                cleaned_tokens.append(token)
+                continue
+
+            e = shannon_entropy(token)
+            has_complexity = any(c.isdigit() for c in token) or any(not c.isalnum() for c in token)
+
+            if e > 4.5 and has_complexity:
+                logger.warning(f"🛡️ High Entropy Secret Blocked: {token[:4]}... (Entropy: {e:.2f})")
+                cleaned_tokens.append("<SECRET_REDACTED>")
+            else:
+                cleaned_tokens.append(token)
+
+        return " ".join(cleaned_tokens)
+
 
 def get_pii_engine():
     return PIIEngine.get_instance()
@@ -209,99 +292,6 @@ def redact_pii_sync(text: str, tenant_id: str = "unknown") -> str:
                 return text
 
         return text
-
-    async def scan(self, messages: list) -> dict:
-        """
-        Escaneo integral de mensajes.
-        Retorna: { "blocked": bool, "changed": bool, "findings_count": int, "cleaned_messages": list }
-        """
-        cleaned = []
-        changed = False
-        findings = 0
-
-        for m in messages:
-            content = m.get("content", "")
-            if not isinstance(content, str):
-                cleaned.append(m)
-                continue
-
-            # Capa 1: Rust Scrubbing
-            redacted = agentshield_rust.scrub_pii_fast(content)
-
-            # Capa 2: Entropy Scanning (Zero-Trust for Unknown Secrets)
-            # Detectamos strings con alta entropía (>4.5) que parecen claves/troyanos
-            redacted = self._entropy_scan(redacted)
-
-            # Capa 2b: CUSTOM RULES (Tenant Specific)
-            # Ahora en async, recuperamos el tenant_id del mensaje o contexto
-            # Asumimos que scan() se llama con contexto
-            tenant_id = "unknown"  # TODO: Pasar tenant_id en args de scan
-
-            # Intentamos sacar tenant_id de metadata si existe
-            if isinstance(messages, list) and len(messages) > 0:
-                # Hack: A veces inyectamos metadata en el primer mensaje
-                pass
-
-            # Await the async implementation
-            redacted = await self.apply_custom_rules_async(redacted, tenant_id)
-
-            # Capa 3: Si el texto cambió, registramos hallazgo
-            if redacted != content:
-                changed = True
-                findings += 1
-
-            new_m = m.copy()
-            new_m["content"] = redacted
-            cleaned.append(new_m)
-
-        return {
-            "blocked": False,  # Por defecto no bloqueamos a menos que sea PII crítica (ej: Password)
-            "changed": changed,
-            "findings_count": findings,
-            "cleaned_messages": cleaned,
-        }
-
-    def _entropy_scan(self, text: str) -> str:
-        """
-        Escanea tokens en busca de anomalías de entropía (Shannon).
-        Un token de lenguaje natural tiene entropía ~2-3.
-        Un secreto (API Key, Hash) tiene > 4.5.
-        """
-        import math
-
-        def shannon_entropy(s):
-            if not s:
-                return 0
-            entropy = 0
-            for x in range(256):
-                p_x = float(s.count(chr(x))) / len(s)
-                if p_x > 0:
-                    entropy += -p_x * math.log(p_x, 2)
-            return entropy
-
-        tokens = text.split()
-        cleaned_tokens = []
-
-        for token in tokens:
-            # Ignoramos URLs comunes o palabras cortas
-            if len(token) < 8 or token.startswith("http"):
-                cleaned_tokens.append(token)
-                continue
-
-            e = shannon_entropy(token)
-
-            # Umbral de pánico: 4.5 (Aceptado en industria como random string)
-            # Y debe contener al menos un numero o simbolo para evitar falsos positivos lingüísticos complejos
-            has_complexity = any(c.isdigit() for c in token) or any(not c.isalnum() for c in token)
-
-            if e > 4.5 and has_complexity:
-                # Es probable que sea un Secreto Desconocido (API Key, JWT, Password)
-                logger.warning(f"🛡️ High Entropy Secret Blocked: {token[:4]}... (Entropy: {e:.2f})")
-                cleaned_tokens.append("<SECRET_REDACTED>")
-            else:
-                cleaned_tokens.append(token)
-
-        return " ".join(cleaned_tokens)
 
 
 pii_guard = PIIEngine.get_instance()
