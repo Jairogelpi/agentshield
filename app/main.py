@@ -252,7 +252,7 @@ app.add_middleware(
 )
 
 # 2. Conectar Routers
-from app.routers import proxy, dashboard, authorize, onboarding, compliance, analytics, audit, receipt, embeddings, feedback, public_config
+from app.routers import proxy, dashboard, authorize, onboarding, compliance, analytics, audit, receipt, embeddings, feedback, public_config, invoices
 from app.routers import admin_chat, tools, images, forensics, trust, admin_roles
 
 app.include_router(public_config.router) # [NEW] Zero-Touch Config
