@@ -46,20 +46,33 @@ async def verify_api_key(auth_header: str) -> str:
     
     # ESTRATEGIA A: JWT (Token largo con puntos)
     if len(token) > 50 and token.count(".") == 2:
+        # Intento A1: Decodificar con nuestra SECRET_KEY (Más rápido)
         try:
             payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-            # Validar expiración y emisor es automático por jose si se configura, 
-            # pero aquí confiamos en la firma.
             app_metadata = payload.get("app_metadata", {})
             tenant_id = app_metadata.get("tenant_id")
             
             if not tenant_id:
-                 # Fallback: si no hay tenant_id, usamos el 'sub' (User ID)
-                 # Esto ocurre antes de que el Trigger corra o si es un token viejo
-                 return payload.get("sub")
-                 
+                  return payload.get("sub")
+                  
             return tenant_id
         except JWTError:
+            # Intento A2: Validar contra Supabase directamente (Fallback lento pero seguro)
+            # Esto es necesario si el token fue firmado por Supabase y no tenemos su JWT_SECRET
+            try:
+                user_res = supabase.auth.get_user(token)
+                if user_res and user_res.user:
+                    # Buscamos si este usuario ya tiene un tenant en la DB
+                    # (Esto es lo que el dashboard necesita: el tenant_id, no el user_id)
+                    res = supabase.table("tenants").select("id").eq("user_id", user_res.user.id).execute()
+                    if res.data:
+                        return res.data[0]['id']
+                    
+                    # Si no hay tenant aún, devolvemos su ID de usuario para que onboarding funcione
+                    return user_res.user.id
+            except Exception as e:
+                logger.error(f"Supabase Auth Fallback Error: {e}")
+                
             raise HTTPException(401, "Invalid or Expired JWT")
 
     # ESTRATEGIA B: API KEY (Opaque Token -> Hash Lookup)

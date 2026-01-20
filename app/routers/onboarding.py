@@ -18,7 +18,10 @@ class SignupRequest(BaseModel):
     tos_version_seen: str = "v1.0"
 
 @router.post("/v1/signup")
-async def signup_tenant(req: SignupRequest):
+async def signup_tenant(req: SignupRequest, authenticated_user_id: str = Depends(get_user_id_from_jwt)):
+    # 1. Seguridad: Forzar que el target sea el del JWT
+    target_owner_id = authenticated_user_id
+    
     # 2. Validación Legal
     if not req.accept_tos:
         raise HTTPException(
@@ -26,60 +29,71 @@ async def signup_tenant(req: SignupRequest):
             detail="You must accept the Terms of Service to proceed."
         )
 
-    # 1. Generar API Key única
-    raw_key = f"sk_live_{secrets.token_urlsafe(32)}"
-    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-    
-    # 2. Crear Tenant en DB
+    # 3. Datos del Tenant (Alineado estrictamente con tu esquema)
     try:
-        res = supabase.table("tenants").insert({
-            "name": req.company_name,
-            "api_key_hash": key_hash,
-            "is_active": True,
-            "default_markup": 1.20,
-            "owner_id": req.owner_id,
-            "region": req.region.value,
-            "tos_accepted": True,
-            "tos_accepted_at": datetime.utcnow().isoformat(),
-            "tos_version": req.tos_version_seen
-        }).execute()
+        # Generamos un slug a partir del nombre de la empresa
+        slug = req.company_name.lower().replace(" ", "-") + "-" + secrets.token_hex(2)
         
+        tenant_data = {
+            "name": req.company_name,
+            "user_id": target_owner_id,
+            "region": req.region.value,
+            "registration_method": "OAUTH" if "@" not in (req.email or "") else "EMAIL",
+            "slug": slug,
+            "compliance_framework": "EU_AI_ACT" if req.region == TenantRegion.EU else "NIST_AI_RMF",
+            "brand_config": {
+                "logo_url": None, 
+                "favicon_url": None, 
+                "company_name": req.company_name, 
+                "primary_color": "#3B82F6"
+            }
+        }
+        
+        # OJO: No insertamos api_key_hash ni is_active ya que no aparecen en tu esquema SQL
+        res = supabase.table("tenants").insert(tenant_data).execute()
+        
+        if not res.data:
+            raise Exception("No data returned from tenant insertion. Check if constraints are met.")
+            
         new_tenant = res.data[0]
         
-        # 3. Crear Centro de Coste Default
+        # 4. Crear Centro de Coste Default (Alineado con NOT NULL monthly_limit)
         default_cc = {
             "tenant_id": new_tenant['id'],
-            "name": "Default Project",
-            "id": f"cc_{secrets.token_hex(4)}"
+            "name": "General Project",
+            "id": f"cc_{secrets.token_hex(4)}",
+            "monthly_limit": 1000.0, # Obligatorio en tu esquema
+            "current_spend": 0.0,
+            "is_billable": True
         }
         supabase.table("cost_centers").insert(default_cc).execute()
         
-        # 4. Política Default
+        # 5. Crear Perfil de Usuario
+        try:
+            supabase.table("user_profiles").insert({
+                "user_id": target_owner_id,
+                "tenant_id": new_tenant['id'],
+                "role": "admin",
+                "is_active": True,
+                "trust_score": 100
+            }).execute()
+        except Exception as profile_err:
+            logger.warning(f"Profile creation skipped: {profile_err}")
+            
+        # 6. Política por Defecto
         default_policy = {
-            "meta": {"version": "2.0-EU-COMPLIANT", "created_at": "now()"},
+            "meta": {"version": "2.0-ALIGNED", "created_at": datetime.utcnow().isoformat()},
             "mode": "active",
-            "panic_mode": False,
-            "risk_management": {
-                "rules": {
-                    "biometric_id": "PROHIBITED",
-                    "hr_recruitment": "HUMAN_CHECK",
-                    "medical_advice": "HUMAN_CHECK",
-                    "credit_scoring": "LOG_AUDIT",
-                    "general_purpose": "ALLOW"
-                }
-            },
-            "limits": {"monthly": 50.0, "per_request": 2.0, "actors": {}},
-            "allowlist": {
-                "models": ["gpt-3.5-turbo", "gpt-4o-mini", "claude-3-haiku"],
-                "providers": ["openai", "anthropic", "groq"]
-            },
-            "governance": {"require_approval_above_cost": 5.0},
-            "smart_routing": {"enabled": False}
+            "rules": {
+                "pii_redaction": "ENABLED",
+                "max_per_request": 5.0,
+                "monthly_budget": 500.0
+            }
         }
         
         supabase.table("policies").insert({
             "tenant_id": new_tenant['id'],
-            "name": "Default Safety Policy",
+            "name": "Enterprise Safety Policy",
             "rules": default_policy,
             "mode": "active",
             "is_active": True
@@ -88,14 +102,13 @@ async def signup_tenant(req: SignupRequest):
         return {
             "status": "created",
             "tenant_id": new_tenant['id'],
-            "api_key": raw_key,
-            "region": req.region.value,
-            # CORRECCIÓN AQUÍ: Usamos tu nuevo dominio
-            "instructions": "Usa tu endpoint seguro: https://getagentshield.com",
-            "message": "Guarda esta clave en lugar seguro."
+            "slug": slug,
+            "message": "Organización creada con éxito."
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create tenant: {str(e)}")
+        logger.error(f"Signup error: {e}")
+        # Enviamos el detalle para que el frontend pueda mostrarlo
+        raise HTTPException(status_code=500, detail=f"Database Alignment Error: {str(e)}")
 
 # --- AUTH HELPERS FOR ONBOARDING ---
 from fastapi import Security, Depends
@@ -118,11 +131,8 @@ async def list_my_organizations(user_id: str = Depends(get_user_id_from_jwt)):
     """
     Devuelve la lista de organizaciones donde el usuario es Owner o Miembro.
     """
-    # 1. Buscar como Owner
-    owned = supabase.table("tenants").select("*").eq("owner_id", user_id).execute()
-    
-    # 2. Buscar como Miembro (TODO: Implementar tabla 'tenant_members')
-    # Por ahora solo soportamos Owner para el MVP
+    # 1. Buscar como Owner/User (Alineado con tu esquema)
+    owned = supabase.table("tenants").select("*").eq("user_id", user_id).execute()
     
     return owned.data
 
@@ -135,9 +145,8 @@ async def invite_member(req: InviteRequest, user_id: str = Depends(get_user_id_f
     """
     Invita a un miembro a la organización del usuario actual.
     """
-    # 1. Obtener la organización del usuario (Asumimos la primera que tenga como Owner para MVP)
-    # En el futuro, el frontend debería enviar el tenant_id contextualmente.
-    orgs = supabase.table("tenants").select("id, name").eq("owner_id", user_id).execute()
+    # 1. Obtener la organización del usuario (Alineado con tu esquema)
+    orgs = supabase.table("tenants").select("id, name").eq("user_id", user_id).execute()
     
     if not orgs.data:
         raise HTTPException(status_code=400, detail="You need to create an organization first.")

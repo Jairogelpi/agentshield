@@ -15,7 +15,6 @@ opentelemetry-sdk
 opentelemetry-exporter-otlp
 opentelemetry-instrumentation-fastapi
 logtail-python
-Pillow
 piexif
 cryptography>=41.0.0
 langdetect

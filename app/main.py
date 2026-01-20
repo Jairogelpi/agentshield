@@ -18,7 +18,16 @@ async def global_security_guard(request: Request):
     # /docs y /openapi.json: Para que tú veas la docu (puedes quitarlo en prod)
     # /v1/webhook: Webhooks de terceros (ej. Stripe/Brevo) que no envían Bearer
     # /v1/public: Public Tenant Config (White Label)
-    whitelist = ["/health", "/docs", "/openapi.json", "/v1/webhook", "/v1/public/tenant-config"]
+    whitelist = [
+        "/health", 
+        "/docs", 
+        "/openapi.json", 
+        "/v1/webhook", 
+        "/v1/public/tenant-config",
+        "/v1/signup", # Registro de nuevo Tenant
+        "/v1/onboarding/organizations", # Listado para onboarding
+        "/v1/onboarding/invite" # Invitaciones durante onboarding
+    ]
     
     if request.url.path in whitelist:
         return # Pase usted

@@ -27,11 +27,11 @@ WORKDIR /app/rust_module
 ENV PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
 RUN maturin build --release --strip
 
-# 4. Instalar Dependencias Python + Nuestro Módulo Rust (Forzando CPU PyTorch)
+# 4. Instalar Dependencias Python + Nuestro Módulo Rust
 WORKDIR /app
 COPY requirements.txt .
+ENV UV_HTTP_TIMEOUT=120
 RUN uv pip install --system --compile-bytecode \
-    --extra-index-url https://download.pytorch.org/whl/cpu \
     -r requirements.txt \
     rust_module/target/wheels/*.whl
 
