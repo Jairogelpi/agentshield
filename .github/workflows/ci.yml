@@ -30,6 +30,8 @@ jobs:
               - 'tests/**'
               - 'requirements.txt'
               - 'pyproject.toml'
+              - 'Dockerfile.ci'
+              - '.github/workflows/ci.yml'
             rust:
               - 'rust_module/**'
             sql:
