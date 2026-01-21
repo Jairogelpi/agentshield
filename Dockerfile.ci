@@ -3,44 +3,63 @@
 # ETAPA 1: Builder (Compilación rápida)
 FROM python:3.13-slim AS builder
 
-# 1.# Instalar dependencias del sistema incluyendo Tesseract OCR
-RUN apt-get update && apt-get install -y \
+# 1. Instalar dependencias del sistema incluyendo Tesseract OCR
+# Usamos cache para apt para no descargar todo de nuevo cada vez
+RUN rm -f /etc/apt/apt.conf.d/docker-clean; echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y \
     build-essential \
     libpq-dev \
     curl \
     tesseract-ocr \
     libtesseract-dev \
     poppler-utils \
-    && rm -rf /var/lib/apt/lists/* \
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # 2. Instalar UV y Maturin
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
-RUN uv pip install --system maturin
+ENV UV_COMPILE_BYTECODE=1
+ENV UV_LINK_MODE=copy
+# Usamos cache para pip/uv
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system maturin
 
 WORKDIR /app
 
-# 3. Compilar el Módulo Rust
+# 3. Compilar el Módulo Rust (Con Cache de Cargo)
 COPY rust_module /app/rust_module
 WORKDIR /app/rust_module
 ENV PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
-RUN maturin build --release --strip
+# Cacheamos el registro y la carpeta target de cargo
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/rust_module/target \
+    maturin build --release --strip && \
+    # Movemos el wheel fuera del target para que persista tras el build
+    mkdir -p /app/dist && \
+    cp target/wheels/*.whl /app/dist/
 
 # 4. Instalar Dependencias Python + Nuestro Módulo Rust
 WORKDIR /app
 COPY requirements.txt .
 ENV UV_HTTP_TIMEOUT=120
-RUN uv pip install --system --compile-bytecode \
-    -r requirements.txt \
-    rust_module/target/wheels/*.whl
 
-# --- CAMBIO CRÍTICO AQUÍ ---
-# 5. Descarga de modelos (FlashRank / ONNX)
-# Eliminamos sentence-transformers y usamos flashrank para descargar el modelo "Nano"
+# Instalamos primero FlashRank y descargamos el modelo (Capa cacheada si reqs.txt no cambia)
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system flashrank
+
+# Descarga de modelos (FlashRank / ONNX)
 # Esto evita descargas en tiempo de ejecución.
 RUN mkdir -p /app/model_cache && \
     python -c "from flashrank import Ranker; Ranker(model_name='ms-marco-MiniLM-L-12-v2', cache_dir='/app/model_cache')"
+
+# Instalamos el resto de dependencias
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system \
+    -r requirements.txt \
+    /app/dist/*.whl
 
 # ETAPA 2: Runner (Imagen final ligera)
 FROM python:3.13-slim
@@ -59,7 +78,6 @@ WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-# --- CAMBIO CRÍTICO AQUÍ ---
 # Copiamos el modelo descargado a /opt/models (Debe coincidir con tu reranker.py)
 COPY --from=builder /app/model_cache /opt/models
 
