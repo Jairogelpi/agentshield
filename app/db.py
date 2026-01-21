@@ -32,13 +32,16 @@ def get_supabase() -> Client:
         key = os.getenv("SUPABASE_SERVICE_KEY")
 
         if not url or not key:
-            logger.critical(f"🔥 FATAL: Missing Supabase Credentials. URL={url is not None}, KEY={key is not None}")
+            logger.critical(
+                f"🔥 FATAL: Missing Supabase Credentials. URL={url is not None}, KEY={key is not None}"
+            )
             # Try to load dotenv again just in case
             from dotenv import load_dotenv
+
             load_dotenv()
             url = os.getenv("SUPABASE_URL")
             key = os.getenv("SUPABASE_SERVICE_KEY")
-            
+
             if not url or not key:
                 raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set.")
 
