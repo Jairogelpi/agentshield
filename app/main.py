@@ -236,10 +236,11 @@ setup_observability(app)
 # --- 🛡️ SECURITY MIDDLEWARE: CLOUDFLARE AUTH + HSTS 🛡️ ---
 @app.middleware("http")
 async def security_guard(request: Request, call_next):
-    # 1. Bypass para Health Check y Desarrollo
+    # 1. Bypass para Health Check, Desarrollo y CORS Preflight (OPTIONS)
     real_ip = request.headers.get("cf-connecting-ip", request.client.host)
     if (
         request.url.path == "/health"
+        or request.method == "OPTIONS"
         or os.getenv("ENVIRONMENT") == "development"
         or real_ip == "127.0.0.1"
     ):
