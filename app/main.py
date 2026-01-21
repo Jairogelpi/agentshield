@@ -71,7 +71,12 @@ if sentry_dsn:
 logtail_token = os.getenv("LOGTAIL_TOKEN")
 
 # Global state for Readiness Probe
+# Global state for Readiness Probe
 MODELS_LOADED = False
+
+# Configurar el logger ROOT de 'agentshield'
+logger = logging.getLogger("agentshield")
+logger.setLevel(logging.INFO)
 
 if logtail_token:
     handler = LogtailHandler(source_token=logtail_token)
@@ -94,14 +99,14 @@ if logtail_token:
     listener.start()
     atexit.register(listener.stop)
 
-    # Configurar el logger ROOT de 'agentshield' para usar la cola
-    logger = logging.getLogger("agentshield")
     logger.addHandler(queue_handler)
-    logger.setLevel(logging.INFO)
-
-    # También mantenemos el logger local de main
-    main_logger = logging.getLogger(__name__)
-    logger.setLevel(logging.INFO)
+else:
+    # Fallback: Simple Console Logger for Local Dev / CI
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
 
 
 def setup_observability(app):
