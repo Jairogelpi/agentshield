@@ -50,6 +50,12 @@ ENV UV_HTTP_TIMEOUT=120
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system flashrank
 
+# --- FIX CRITICO: FORZAR TORCH CPU ---
+# Transformers instala automáticamente Torch con CUDA (NVIDIA) lo que pesa >4GB y rompe el CI por espacio.
+# Forzamos la instalación de la versión CPU (~150MB) desde el índice oficial de PyTorch.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system --index-url https://download.pytorch.org/whl/cpu torch
+
 # Descarga de modelos (FlashRank / ONNX)
 # Esto evita descargas en tiempo de ejecución.
 RUN mkdir -p /app/model_cache && \
