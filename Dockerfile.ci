@@ -5,7 +5,7 @@ FROM python:3.13-slim AS builder
 
 # 1.# Instalar dependencias del sistema incluyendo Tesseract OCR
 RUN apt-get update && apt-get install -y \
-    gcc \
+    build-essential \
     libpq-dev \
     curl \
     tesseract-ocr \
