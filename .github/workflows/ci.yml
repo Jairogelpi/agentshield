@@ -171,8 +171,7 @@ jobs:
       - name: Matrix Tests
         run: |
           uv pip install maturin pytest pytest-asyncio httpx -r requirements.txt
-          cd rust_module && uv run maturin develop --release
-          cd ..
+          uv pip install -e rust_module/
           uv run pytest tests/ -v
 
   # ─────────────────────────────────────────────
@@ -196,8 +195,7 @@ jobs:
         run: |
           uv venv
           uv pip install maturin granian -r requirements.txt
-          cd rust_module && uv run maturin develop --release
-          cd ..
+          uv pip install -e rust_module/
           uv run python -m granian --interface asgi app.main:app --host 0.0.0.0 --port 8000 &
           sleep 5
           curl -f http://localhost:8000/health
