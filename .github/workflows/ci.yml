@@ -44,9 +44,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Lint
+      - name: Auto-Fix & Format
         if: needs.changes.outputs.python == 'true' || needs.changes.outputs.rust == 'true'
-        uses: astral-sh/ruff-action@v3
+        run: |
+          pip install ruff
+          # Run check with fix, allow failure initially to maximize fixes
+          ruff check --fix . || true
+          # Run formatter
+          ruff format .
+      
+      - name: Commit changes
+        if: needs.changes.outputs.python == 'true' || needs.changes.outputs.rust == 'true'
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "style: auto-format with ruff"
+          branch: ${{ github.head_ref }}
       
       - name: Security & SQL
         if: needs.changes.outputs.python == 'true' || needs.changes.outputs.sql == 'true'

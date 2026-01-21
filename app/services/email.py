@@ -1,6 +1,7 @@
-import os
-import resend
 import logging
+import os
+
+import resend
 
 logger = logging.getLogger("agentshield.email")
 
