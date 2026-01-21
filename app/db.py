@@ -15,8 +15,8 @@ from app.utils import fast_json as json
 logger = logging.getLogger("agentshield.db")
 
 # Configuración
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+# Configuración
+# MOVED TO LAZY LOAD INSIDE FUNCTIONS TO AVOID IMPORT-TIME MISSING VARS
 REDIS_URL = os.getenv("REDIS_URL")
 
 # Lazy-loaded clients (don't create at import time for tests)
@@ -28,7 +28,21 @@ def get_supabase() -> Client:
     """Lazy-load Supabase client."""
     global _supabase_client
     if _supabase_client is None:
-        _supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_SERVICE_KEY")
+
+        if not url or not key:
+            logger.critical(f"🔥 FATAL: Missing Supabase Credentials. URL={url is not None}, KEY={key is not None}")
+            # Try to load dotenv again just in case
+            from dotenv import load_dotenv
+            load_dotenv()
+            url = os.getenv("SUPABASE_URL")
+            key = os.getenv("SUPABASE_SERVICE_KEY")
+            
+            if not url or not key:
+                raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set.")
+
+        _supabase_client = create_client(url, key)
     return _supabase_client
 
 
