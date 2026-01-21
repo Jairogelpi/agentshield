@@ -17,7 +17,7 @@ router = APIRouter(tags=["Onboarding"])
 
 class SignupRequest(BaseModel):
     company_name: str
-    email: str  # Opcional
+    email: str | None = None  # Realmente opcional ahora
     owner_id: str  # UUID de Supabase Auth
     region: TenantRegion = TenantRegion.EU
     accept_tos: bool
