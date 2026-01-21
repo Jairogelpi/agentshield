@@ -13,6 +13,7 @@ resend.api_key = os.getenv("RESEND_API_KEY")
 # 2. En Producción: Configura la variable de entorno RESEND_FROM_EMAIL = "AgentShield <noreply@getagentshield.com>"
 SENDER_EMAIL = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev")
 
+
 async def send_welcome_email(to_email: str, name: str = "Agent"):
     """
     Envía el correo de bienvenida oficial de AgentShield.
@@ -64,12 +65,14 @@ async def send_welcome_email(to_email: str, name: str = "Agent"):
     """
 
     try:
-        r = resend.Emails.send({
-            "from": SENDER_EMAIL,
-            "to": to_email,
-            "subject": "🛡️ Bienvenido a AgentShield OS",
-            "html": html_content
-        })
+        r = resend.Emails.send(
+            {
+                "from": SENDER_EMAIL,
+                "to": to_email,
+                "subject": "🛡️ Bienvenido a AgentShield OS",
+                "html": html_content,
+            }
+        )
         logger.info(f"Welcome email sent to {to_email}: {r}")
         return True
     except Exception as e:
