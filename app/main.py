@@ -288,6 +288,7 @@ from app.routers import (
     public_config,
     tools,
     trust,
+    webhooks,
 )
 
 app.include_router(public_config.router)  # [NEW] Zero-Touch Config
@@ -308,6 +309,7 @@ app.include_router(images.router)
 app.include_router(forensics.router)
 app.include_router(trust.router)
 app.include_router(admin_roles.router)  # [NEW] AI Role Architect
+app.include_router(webhooks.router)  # [NEW] Internal DB Webhooks
 
 # Endpoint de salud para Render (ping)
 # Endpoint de salud para Render (Deep Health Check)
