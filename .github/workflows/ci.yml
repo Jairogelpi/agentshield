@@ -214,3 +214,36 @@ jobs:
       - name: Validate SQL Schemas
         run: python scripts/validate_schemas.py
 
+  # ─────────────────────────────────────────────
+  # JOB 8: BUILD & PUSH DOCKER (Instant Render)
+  # ─────────────────────────────────────────────
+  docker-push:
+    name: Build & Push to GHCR
+    runs-on: ubuntu-latest
+    needs: [smoke-test, sql-validation]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ github.repository }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
