@@ -1,3 +1,4 @@
+from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -5,10 +6,14 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, ORJSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from dotenv import load_dotenv
 
 # Load env vars first thing (Critical for Render/Local hybrid)
 load_dotenv()
+
+import logging
+
+# Debug Env Vars (Safe Log)
+import os
 
 from app.limiter import limiter
 from app.logic import verify_api_key
@@ -16,12 +21,10 @@ from app.routers import analytics, authorize, compliance, dashboard, onboarding,
 from app.services.cache import init_semantic_cache_index
 from app.services.market_oracle import update_market_rules
 
-# Debug Env Vars (Safe Log)
-import os
-import logging
 debug_logger = logging.getLogger("startup")
 supabase_status = "✅ Found" if os.getenv("SUPABASE_URL") else "❌ MISSING"
 debug_logger.info(f"Startup Env Check: SUPABASE_URL={supabase_status}")
+
 
 # 1. Función de Guardián Global
 async def global_security_guard(request: Request):
