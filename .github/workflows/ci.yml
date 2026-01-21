@@ -188,10 +188,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Smoke
         run: |
+          uv venv
           uv pip install maturin granian -r requirements.txt
           cd rust_module && uv run maturin develop --release
           cd ..
