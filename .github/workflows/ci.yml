@@ -76,11 +76,15 @@ jobs:
       - name: Build & Test
         run: |
           uv pip install maturin pytest pytest-cov pytest-asyncio httpx -r requirements.txt
-          cd rust_module && uv run maturin develop --release
-          cd ..
+          # Instalar el módulo Rust en el MISMO entorno virtual (editable mode)
+          uv pip install -e rust_module/
+          
+          # Ejecutar tests
           uv run pytest tests/ -v --cov=app --cov-report=xml
         env:
           PYTHONPATH: ${{ github.workspace }}
+          # Asegurar que maturin use abi3 si es necesario (opcional, pero buena práctica)
+          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: 1
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         with:
