@@ -45,7 +45,7 @@ async def signup_tenant(
     req: SignupRequest, authenticated_user_id: str = Depends(get_user_id_from_jwt)
 ):
     # 1. Seguridad: Forzar que el target sea el del JWT
-    target_owner_id = authenticated_user_id
+    target_user_id = authenticated_user_id
 
     # 2. Validación Legal
     if not req.accept_tos:
@@ -60,7 +60,7 @@ async def signup_tenant(
 
         tenant_data = {
             "name": req.company_name,
-            "user_id": target_owner_id,
+            "user_id": target_user_id,
             "region": req.region.value,
             "registration_method": "OAUTH" if "@" not in (req.email or "") else "EMAIL",
             "slug": slug,
@@ -96,7 +96,7 @@ async def signup_tenant(
         try:
             supabase.table("user_profiles").insert(
                 {
-                    "user_id": target_owner_id,
+                    "user_id": target_user_id,
                     "tenant_id": new_tenant["id"],
                     "role": "admin",
                     "is_active": True,
@@ -127,10 +127,10 @@ async def signup_tenant(
         # This allows the frontend middleware to check app_metadata.tenant_id
         try:
             supabase.auth.admin.update_user_by_id(
-                target_owner_id, {"app_metadata": {"tenant_id": new_tenant["id"]}}
+                target_user_id, {"app_metadata": {"tenant_id": new_tenant["id"]}}
             )
             logger.info(
-                f"✅ User {target_owner_id} linked to tenant {new_tenant['id']} in app_metadata"
+                f"✅ User {target_user_id} linked to tenant {new_tenant['id']} in app_metadata"
             )
         except Exception as meta_err:
             logger.warning(f"⚠️ Failed to update app_metadata: {meta_err}")

@@ -68,13 +68,12 @@ async def get_tenant_from_jwt(credentials: HTTPAuthorizationCredentials = Securi
         user_response = supabase.auth.get_user(token)
         user_id = user_response.user.id
 
-        # 2. Buscar Tenant asociado al usuario (Owner)
-        # Nota: Asumimos que existe un campo 'owner_id' en tenants o una tabla de mapeo.
-        # Para MVP: Buscamos en 'tenants' donde 'owner_id' sea igual al user_id
-        # Si no tienes owner_id, tendras que añadirlo: ALTER TABLE tenants ADD COLUMN owner_id UUID;
+        # 2. Buscar Tenant asociado al usuario
+        # Nota: Asumimos que existe un campo 'user_id' en tenants.
+        # Para MVP: Buscamos en 'tenants' donde 'user_id' sea igual al user_id
 
         # Cache Strategy
-        cache_key = f"tenant:owner:{user_id}"
+        cache_key = f"tenant:user:{user_id}"
         cached_tenant = await redis_client.get(cache_key)
         if cached_tenant:
             return cached_tenant

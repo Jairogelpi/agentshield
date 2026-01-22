@@ -32,7 +32,7 @@ async def get_user_trust_profile(email: str) -> dict:
         # Para esta demo, haremos un mock lookup si no es directo, o buscamos en `auth.users` si tuvieramos acceso admin directo (que lo tenemos via service_role).
 
         # Query Hack: Buscar en user_profiles si tuvieramos email, pero solo tiene user_id.
-        # Buscamos en 'tenants' via owner_id? No.
+        # Buscamos en 'tenants' via user_id? No.
         # Fallback: Usamos supabase admin list_users (requiere privilegios de admin auth).
 
         # V2: Buscar en policy_events un evento reciente de este email para sacar su ID.
