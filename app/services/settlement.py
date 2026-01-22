@@ -37,9 +37,9 @@ class SettlementService:
             transactions = []
 
             for doc in assets.data:
-                owner_id = doc.get("uploaded_by")
+                user_id = doc.get("uploaded_by")
                 # Regla: No pagarse a sí mismo (wash trading prevention)
-                if not owner_id or str(owner_id) == str(buyer_user_id):
+                if not user_id or str(user_id) == str(buyer_user_id):
                     continue
 
                 # 2. Regla Anti-Spam: Limitar 10 royalties por doc/día (Anti-Mining)
@@ -49,7 +49,7 @@ class SettlementService:
 
                     from app.db import redis_client
 
-                    key = f"royalty_cap:{owner_id}:{doc['id']}:{datetime.date.today()}"
+                    key = f"royalty_cap:{user_id}:{doc['id']}:{datetime.date.today()}"
                     # Incrementa atomically. Si no existe, lo crea con value 1.
                     hits = await redis_client.incr(key)
 
@@ -73,7 +73,7 @@ class SettlementService:
                     {
                         "tenant_id": tenant_id,
                         "from_wallet_id": buyer_user_id,
-                        "to_wallet_id": owner_id,
+                        "to_wallet_id": user_id,
                         "amount": amount_per_doc,
                         "concept": "KNOWLEDGE_ROYALTY",
                         "asset_id": doc["id"],
@@ -81,7 +81,7 @@ class SettlementService:
                 )
 
                 logger.info(
-                    f"💰 Royalty generated: {amount_per_doc:.6f} for {doc['filename']} (Owner: {owner_id})"
+                    f"💰 Royalty generated: {amount_per_doc:.6f} for {doc['filename']} (Owner: {user_id})"
                 )
 
             if transactions:
