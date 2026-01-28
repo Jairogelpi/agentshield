@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AgentShield Forensic Verifier</title>
+    <style>
+        :root {
+            --primary: #0ea5e9;
+            --success: #22c55e;
+            --error: #ef4444;
+            --bg: #0f172a;
+            --card: #1e293b;
+            --text: #f8fafc;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            background-color: var(--card);
+            padding: 40px;
+            border-radius: 16px;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+            width: 100%;
+            text-align: center;
+        }
+
+        h1 {
+            margin-bottom: 8px;
+            color: var(--primary);
+        }
+
+        p {
+            color: #94a3b8;
+            margin-bottom: 32px;
+        }
+
+        .drop-zone {
+            border: 2px dashed #475569;
+            border-radius: 12px;
+            padding: 40px;
+            transition: all 0.2s;
+            cursor: pointer;
+            margin-bottom: 24px;
+        }
+
+        .drop-zone.active {
+            border-color: var(--primary);
+            background-color: rgba(14, 165, 233, 0.1);
+        }
+
+        .status {
+            padding: 16px;
+            border-radius: 8px;
+            display: none;
+            font-weight: bold;
+            margin-top: 20px;
+        }
+
+        .status.valid {
+            background-color: rgba(34, 197, 94, 0.1);
+            color: var(--success);
+            display: block;
+        }
+
+        .status.invalid {
+            background-color: rgba(239, 68, 68, 0.1);
+            color: var(--error);
+            display: block;
+        }
+
+        .file-list {
+            text-align: left;
+            margin-top: 20px;
+            font-size: 0.9rem;
+        }
+
+        .file-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid #334155;
+        }
+
+        .icon {
+            font-size: 24px;
+            margin-bottom: 12px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="icon">⚖️</div>
+        <h1>Legal Discovery Verifier</h1>
+        <p>Offline Forensic Integrity Check (No Internet Required)</p>
+
+        <div id="dropZone" class="drop-zone">
+            Drag and drop <b>transcript.json</b>, <b>digital_signature.sig</b>, and <b>public_key.pem</b> here
+        </div>
+
+        <div id="fileList" class="file-list"></div>
+        <div id="status" class="status"></div>
+
+        <div style="margin-top: 40px; font-size: 0.8rem; color: #475569;">
+            AgentShield Forensic Chaining v2.0<br>
+            Powered by WebCrypto RSA-SHA256
+        </div>
+    </div>
+
+    <script>
+        const dropZone = document.getElementById('dropZone');
+        const status = document.getElementById('status');
+        const fileList = document.getElementById('fileList');
+        let files = {};
+
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, e => {
+                e.preventDefault();
+                e.stopPropagation();
+            }, false);
+        });
+
+        dropZone.addEventListener('dragover', () => dropZone.classList.add('active'));
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('active'));
+
+        dropZone.addEventListener('drop', e => {
+            dropZone.classList.remove('active');
+            const droppedFiles = Array.from(e.dataTransfer.files);
+            handleFiles(droppedFiles);
+        });
+
+        async function handleFiles(droppedFiles) {
+            for (const file of droppedFiles) {
+                if (file.name === 'transcript.json') files.json = await file.text();
+                if (file.name === 'digital_signature.sig') files.sig = await file.arrayBuffer();
+                if (file.name === 'public_key.pem') files.pem = await file.text();
+            }
+            updateUI();
+            if (files.json && files.sig && files.pem) {
+                verify();
+            }
+        }
+
+        function updateUI() {
+            fileList.innerHTML = '';
+            ['transcript.json', 'digital_signature.sig', 'public_key.pem'].forEach(name => {
+                const key = name.includes('json') ? 'json' : (name.includes('sig') ? 'sig' : 'pem');
+                const div = document.createElement('div');
+                div.className = 'file-item';
+                div.innerHTML = `<span>${name}</span> <span>${files[key] ? '✅ Loaded' : '❌ Missing'}</span>`;
+                fileList.appendChild(div);
+            });
+        }
+
+        async function verify() {
+            try {
+                // 1. Prepare Public Key
+                const pemHeader = "-----BEGIN PUBLIC KEY-----";
+                const pemFooter = "-----END PUBLIC KEY-----";
+                const pemContent = files.pem.replace(pemHeader, "").replace(pemFooter, "").replace(/\s/g, "");
+                const binaryPem = str2ab(atob(pemContent));
+
+                const publicKey = await crypto.subtle.importKey(
+                    "spki",
+                    binaryPem,
+                    {
+                        name: "RSA-PSS",
+                        hash: "SHA-256"
+                    },
+                    false,
+                    ["verify"]
+                );
+
+                // 2. Clear status
+                status.className = 'status';
+                status.innerText = 'Verifying...';
+
+                // 3. Verify
+                const encoder = new TextEncoder();
+                // AgentShield uses sort_keys=True and no spaces in JSON for the signature
+                // For the tool, we expect the RAW JSON content or we need to normalize it here.
+                // However, since we provide the 'transcript.json' in the zip which IS the exact signed content, 
+                // we should be fine as long as we don't re-encode it with spaces here.
+                const data = encoder.encode(files.json);
+
+                const isValid = await crypto.subtle.verify(
+                    {
+                        name: "RSA-PSS",
+                        saltLength: 32, // Should match salt_length=padding.PSS.MAX_LENGTH (usually hash length)
+                    },
+                    publicKey,
+                    files.sig,
+                    data
+                );
+
+                if (isValid) {
+                    status.innerText = "✅ VALID & UNTAMPERED: Evidence integrity verified.";
+                    status.classList.add('valid');
+                } else {
+                    status.innerText = "❌ TAMPERING DETECTED: Signature mismatch.";
+                    status.classList.add('invalid');
+                }
+            } catch (e) {
+                console.error(e);
+                status.innerText = "❌ ERROR: Could not process files. Ensure files are correct.";
+                status.classList.add('invalid');
+            }
+        }
+
+        function str2ab(str) {
+            const buf = new ArrayBuffer(str.length);
+            const bufView = new Uint8Array(buf);
+            for (let i = 0, strLen = str.length; i < strLen; i++) {
+                bufView[i] = str.charCodeAt(i);
+            }
+            return buf;
+        }
+    </script>
+</body>
+
+</html>

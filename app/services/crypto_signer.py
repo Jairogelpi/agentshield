@@ -98,3 +98,28 @@ def hash_content(data: dict) -> str:
     """Crea un Hash SHA256 del contenido (Huella digital)."""
     payload_bytes = json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload_bytes).hexdigest()
+
+
+def get_public_key_pem() -> str:
+    """
+    Retorna la clave pública en formato PEM para adjuntar en paquetes de evidencia.
+    """
+    # 1. Intentar desde ENV
+    en_pub = os.getenv("PUBLIC_KEY_PEM")
+    if en_pub:
+        return en_pub
+
+    # 2. Intentar desde archivo
+    if os.path.exists(PUBLIC_KEY_PATH):
+        with open(PUBLIC_KEY_PATH, "r") as f:
+            return f.read()
+
+    # 3. Extraer del objeto signer (fallback final)
+    if _signer_key:
+        public_key = _signer_key.public_key()
+        return public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode("utf-8")
+
+    return "-----BEGIN PUBLIC KEY-----\nKEY_NOT_CONFIGURED\n-----END PUBLIC KEY-----"

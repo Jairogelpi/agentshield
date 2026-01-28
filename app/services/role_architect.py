@@ -16,22 +16,24 @@ class RoleArchitect:
     async def auto_configure_role(
         self, tenant_id: str, description: str, user_id: str = "admin"
     ) -> dict[str, Any]:
+        # [MODIFIED] Upgrade to God Tier Persona Generation
         prompt = f"""
-        Actúa como un Arquitecto de Sistemas de IA y Experto en Ciberseguridad.
-        El cliente quiere crear un rol operativo basado en esta descripción: "{description}"
+        Act as an expert AI Behavioral Designer.
+        Create a 'Deep System Persona' for a corporate employee with this Job Description:
+        "{description}"
 
-        Tu tarea es devolver un JSON estricto para configurar AgentShield OS con:
-        1. "department": Nombre del departamento sugerido (ej: "Legal", "Sales").
-        2. "function": Título del puesto sugerido (ej: "Junior Analyst").
-        3. "system_persona": Un System Prompt profesional y robusto que incluya:
-           - Identidad clara.
-           - Protocolo de respuesta.
-           - Prohibición explícita de salirse del rol.
-        4. "pii_policy": "BLOCK" (si es sensible como RRHH/Finanzas o se menciona bloqueo) o "REDACT" (estándar).
-        5. "default_mode": "agentshield-secure" (por defecto) o "agentshield-auto".
-        6. "active_rules": Lista de 3 a 5 reglas cortas de seguridad (ej: "No Financial Advice", "DLP Active", "Block Competitor Names").
+        Output strictly valid JSON with keys:
+        - department: Suggested department name (e.g. "Legal", "Engineering").
+        - function: Suggested job title (e.g. "Senior Counsel").
+        - system_persona: A dense, 4-5 sentence directive defining their authority, expertise, and interaction model.
+        - cognitive_framework: A specific instruction on how to reason. (e.g., for Legal: "Prioritize risk mitigation over speed. Assume worst-case interpretation."; for Eng: "Prioritize efficiency and technically correct specificity.")
+        - tone_guidelines: A list of 3 adjectives (e.g., "Rigorous", "Litigious", "Concise").
+        - communication_constraints: 2 rules on how NOT to speak (e.g., "Never use emojis", "Never speculate on facts").
+        - pii_policy: "BLOCK" (if sensitive like HR/Finance) or "REDACT" (standard).
+        - default_mode: "agentshield-secure" (default) or "agentshield-auto".
+        - active_rules: List of 3-5 short security rules (e.g. "No Financial Advice", "DLP Active").
 
-        Responde ÚNICAMENTE el objeto JSON.
+        Ensure the 'system_persona' incorporates the cognitive framework and tone implicitly.
         """
 
         # Usamos GPT-4o para garantizar la calidad del System Prompt
@@ -69,6 +71,9 @@ class RoleArchitect:
                         "metadata": {
                             "active_rules": config.get("active_rules", []),
                             "source": description,
+                            "cognitive_framework": config.get("cognitive_framework"),
+                            "tone_guidelines": config.get("tone_guidelines"),
+                            "communication_constraints": config.get("communication_constraints"),
                         },
                     },
                     on_conflict="tenant_id, department, function",

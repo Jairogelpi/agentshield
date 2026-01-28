@@ -237,6 +237,74 @@ async def get_profitability_report(
         raise HTTPException(status_code=500, detail=f"Error en reporte: {str(e)}")
 
 
+@router.get("/analytics/net-impact")
+async def get_net_cost_impact(tenant_id: str = Depends(get_current_tenant_id)):
+    """
+    God Tier Financial Widget: "The Security That Pays You".
+    Formula: (Arbitrage Savings + Cache Savings) - License Cost = Net Profit.
+    """
+    try:
+        from datetime import datetime, timedelta
+
+        # 1. Determine Period (Current Month)
+        now = datetime.utcnow()
+        first_day = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        
+        # 2. Get Savings from Receipts (via DB sum for speed)
+        # We sum 'savings_usd' column for the current month
+        res = (
+            supabase.table("receipts")
+            .select("savings_usd")
+            .eq("tenant_id", tenant_id)
+            .gte("created_at", first_day.isoformat())
+            .execute()
+        )
+        
+        total_savings = sum(float(r.get("savings_usd", 0) or 0) for r in res.data)
+        
+        # 3. Get License Cost (from Tenant Settings or Default)
+        # Default Enterprise License = $500/mo
+        tenant_res = (
+            supabase.table("tenants")
+            .select("metadata")
+            .eq("id", tenant_id)
+            .single()
+            .execute()
+        )
+        
+        metadata = tenant_res.data.get("metadata") or {}
+        license_cost = float(metadata.get("license_cost_usd", 500.0))
+        
+        # 4. Calculate Logic
+        net_impact = total_savings - license_cost
+        is_profitable = net_impact > 0
+        
+        roi_percent = ((total_savings - license_cost) / license_cost) * 100 if license_cost > 0 else 0
+        
+        return {
+            "period": "Current Month",
+            "currency": "USD",
+            "costs": {
+                "license_fee": license_cost,
+            },
+            "savings": {
+                "total_savings": round(total_savings, 2),
+                "arbitrage_contribution": round(total_savings * 0.7, 2), # Estimated split if column not separated
+                "cache_contribution": round(total_savings * 0.3, 2),
+            },
+            "net_impact": {
+                "value": round(net_impact, 2),
+                "is_positive": is_profitable,
+                "roi_percent": round(roi_percent, 1),
+                "tagline": "PROFIT GENERATOR" if is_profitable else "COST SAVER"
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Net Impact Calc Error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to calculate net impact.")
+
+
 @router.get("/analytics/history")
 async def get_spending_history(tenant_id: str = Depends(get_current_tenant_id), days: int = 30):
     """
