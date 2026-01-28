@@ -19,14 +19,14 @@ from app.services.identity import VerifiedIdentity, verify_identity_envelope
 from app.services.llm_gateway import execute_with_resilience
 from app.services.pii_guard import pii_guard
 from app.services.pipeline import DecisionPipeline
+from app.services.pricing_sync import get_model_pricing
 from app.services.receipt_manager import receipt_manager
 
 # [NEW] Role Fabric
 from app.services.roles import role_fabric
 from app.services.semantic_router import semantic_router
-from app.services.trust_system import trust_system
-from app.services.pricing_sync import get_model_pricing
 from app.services.tokenizer import get_token_count
+from app.services.trust_system import trust_system
 
 router = APIRouter()
 logger = logging.getLogger("agentshield.proxy")
@@ -114,14 +114,14 @@ async def universal_proxy(
     # Obtenemos precios reales para el modelo solicitado y el efectivo
     req_pricing = await get_model_pricing(ctx.requested_model)
     eff_pricing = await get_model_pricing(ctx.effective_model)
-    
+
     pricing_context = {
         "requested": req_pricing,
         "effective": eff_pricing,
         "model": ctx.effective_model,
         "requested_model": ctx.requested_model,
-        "provider": "litellm", # O detectar de la cadena del modelo
-        "tenant_id": ctx.tenant_id
+        "provider": "litellm",  # O detectar de la cadena del modelo
+        "tenant_id": ctx.tenant_id,
     }
 
     user_context = {
@@ -133,7 +133,7 @@ async def universal_proxy(
         "hive_hit": hive_hit,
         "prompt_text": user_prompt,
     }
-    
+
     # Conteo de tokens real
     input_tokens_real = get_token_count(user_prompt, ctx.effective_model)
 
@@ -166,20 +166,24 @@ async def universal_proxy(
         # Calculos Financieros Reales (Arbitraje Expuesto)
         p_eff = pricing["effective"]
         p_req = pricing["requested"]
-        
+
         real_cost = (tokens_in * p_eff["price_in"]) + (output_tokens_final * p_eff["price_out"])
-        requested_cost = (tokens_in * p_req["price_in"]) + (output_tokens_final * p_req["price_out"])
-        
+        requested_cost = (tokens_in * p_req["price_in"]) + (
+            output_tokens_final * p_req["price_out"]
+        )
+
         # El ahorro es la diferencia entre lo que habrían pagado y lo que pagan hoy
         savings = max(0, requested_cost - real_cost)
         if context.get("hive_hit"):
-             # Si es hit, el coste es casi 0 (solo infraestructura), el ahorro es total
-             savings = requested_cost
-             real_cost = 0.0001 
+            # Si es hit, el coste es casi 0 (solo infraestructura), el ahorro es total
+            savings = requested_cost
+            real_cost = 0.0001
 
         # Calculos CO2
         co2 = carbon_governor.estimate_footprint(pricing["model"], tokens_in, output_tokens_final)
-        co2_gross = carbon_governor.estimate_footprint(pricing["requested_model"], tokens_in, output_tokens_final)
+        co2_gross = carbon_governor.estimate_footprint(
+            pricing["requested_model"], tokens_in, output_tokens_final
+        )
         co2_avoided = max(0, co2_gross - co2)
 
         metrics = HudMetrics(
@@ -202,7 +206,7 @@ async def universal_proxy(
         # D. Generamos la HUD Card (Elite Formatting)
         protection_status = "✅ **Protegido**" if metrics.trust_score > 70 else "🛡️ **Vigilancia**"
         hive_tag = " | 🐝 **Hive Mind**" if context.get("hive_hit") else ""
-        
+
         hud_md = (
             f"\n\n---\n"
             f"**🛡️ AgentShield Status:** {protection_status} | **Role:** `{context['role_name']}`\n"
@@ -228,15 +232,15 @@ async def universal_proxy(
             user_id=ctx.user_id,
             request_data={"model": ctx.effective_model, "trace_id": ctx.trace_id},
             response_data={"metrics": metrics.model_dump()},
-            metadata=ctx.model_dump()
+            metadata=ctx.model_dump(),
         )
-        
+
         if not context.get("hive_hit") and output_tokens_final > 20:
             background_tasks.add_task(
                 set_semantic_cache,
                 prompt=context.get("prompt_text"),
                 response=output_text,
-                tenant_id=ctx.tenant_id
+                tenant_id=ctx.tenant_id,
             )
 
     return StreamingResponse(
