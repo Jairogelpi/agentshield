@@ -65,59 +65,55 @@ async def generate_legal_discovery_package(receipt_id: str):
     The Black Box: Generates a self-contained forensic ZIP for legal discovery.
     """
     # 1. Fetch receipt data from DB
-    res = (
-        supabase.table("receipts")
-        .select("*")
-        .eq("id", receipt_id)
-        .single()
-        .execute()
-    )
-    
+    res = supabase.table("receipts").select("*").eq("id", receipt_id).single().execute()
+
     if not res.data:
         raise HTTPException(status_code=404, detail="Receipt not found")
-        
+
     receipt = res.data
     content = receipt.get("content_json") or {}
     signature = receipt.get("signature")
-    
+
     # 2. Generate PDF Transcript
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", "B", 16)
     pdf.cell(40, 10, "AgentShield Forensic Transcript")
     pdf.ln(20)
-    
+
     pdf.set_font("Arial", "", 10)
     pdf.cell(0, 10, f"Receipt ID: {receipt_id}", ln=True)
     pdf.cell(0, 10, f"Timestamp: {content.get('timestamp')}", ln=True)
     pdf.cell(0, 10, f"Tenant: {content.get('tenant_id')}", ln=True)
     pdf.cell(0, 10, f"Actor: {content.get('actor')}", ln=True)
     pdf.ln(10)
-    
+
     pdf.set_font("Arial", "B", 12)
     pdf.cell(0, 10, "Transaction Details:", ln=True)
     pdf.set_font("Arial", "", 10)
-    
+
     tx = content.get("transaction", {})
     for k, v in tx.items():
         pdf.cell(0, 10, f"{k}: {v}", ln=True)
-        
+
     pdf_buffer = io.BytesIO()
     pdf_output = pdf.output()
     if isinstance(pdf_output, bytearray):
         pdf_buffer.write(pdf_output)
     else:
-        pdf_buffer.write(bytes(pdf_output, 'latin1'))
+        pdf_buffer.write(bytes(pdf_output, "latin1"))
     pdf_buffer.seek(0)
 
     # 3. Get Public Key from Secure Service
     from app.services.crypto_signer import get_public_key_pem
+
     public_key = get_public_key_pem()
 
     # 4. Load Verification Tool Template
     tool_content = "<html>Verification Tool Not Found</html>"
     try:
         import os
+
         template_path = "app/templates/verification_tool.html"
         if os.path.exists(template_path):
             with open(template_path, "r", encoding="utf-8") as f:
@@ -130,22 +126,22 @@ async def generate_legal_discovery_package(receipt_id: str):
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
         # HUMAN READABLE
         zip_file.writestr("chat_transcript.pdf", pdf_buffer.getvalue())
-        
+
         # MACHINE READABLE
         zip_file.writestr("transcript.json", json.dumps(content, indent=2))
-        
+
         # CRYPTOGRAPHIC PROOF
         zip_file.writestr("digital_signature.sig", signature)
         zip_file.writestr("public_key.pem", public_key)
-        
+
         # OFFLINE TOOL
         zip_file.writestr("verification_tool.html", tool_content)
-        
+
     zip_buffer.seek(0)
-    
+
     filename = f"evidence_{receipt_id[:8]}.zip"
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )

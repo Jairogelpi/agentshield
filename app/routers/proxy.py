@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.limiter import limiter
 from app.schema import DecisionContext
+from app.services.cache import get_semantic_cache, set_semantic_cache  # [NEW] Cache Services
 from app.services.carbon import carbon_governor
 from app.services.event_bus import event_bus
 from app.services.hud import HudMetrics, build_structured_event
@@ -19,12 +20,10 @@ from app.services.llm_gateway import execute_with_resilience
 from app.services.pii_guard import pii_guard
 from app.services.receipt_manager import receipt_manager
 
-
 # [NEW] Role Fabric
 from app.services.roles import role_fabric
 from app.services.semantic_router import semantic_router
 from app.services.trust_system import trust_system
-from app.services.cache import get_semantic_cache, set_semantic_cache  # [NEW] Cache Services
 
 router = APIRouter()
 logger = logging.getLogger("agentshield.proxy")
@@ -131,22 +130,20 @@ async def universal_proxy(
     # ==============================================================================
     # 6. STREAMING EXECUTION (Now with Hive Mind support)
     # ==============================================================================
-    
+
     # [NEW] 6.1 Hive Memory Check
     hive_hit = False
     cached_response = None
-    
+
     # Solo buscamos en caché si no es un regeneración forzada (opcional)
     # Y si el trust policy lo permite
     if trust_policy.get("allow_cache", True):
-        cached_response = await get_semantic_cache(
-            prompt=user_prompt, 
-            tenant_id=ctx.tenant_id
-        )
-    
+        cached_response = await get_semantic_cache(prompt=user_prompt, tenant_id=ctx.tenant_id)
+
     if cached_response:
         hive_hit = True
         ctx.log("CACHE", "🐝 Hive Hit! Serving from memory.")
+
         # Simulamos un generador compatible con el protocolo
         async def mock_upstream_gen():
             # Simulamos tokens para el efecto de escritura si se desea, o dump completo
@@ -155,17 +152,14 @@ async def universal_proxy(
             words = cached_response.split(" ")
             for i in range(0, len(words), chunk_size):
                 chunk_text = " ".join(words[i : i + chunk_size]) + " "
-                yield {
-                    "choices": [{"delta": {"content": chunk_text}}],
-                    "model": "hive-memory-v1"
-                }
+                yield {"choices": [{"delta": {"content": chunk_text}}], "model": "hive-memory-v1"}
                 # Pequeño sleep para que se sienta fluido, no instantáneo (opcional)
-                # await asyncio.sleep(0.01) 
-        
+                # await asyncio.sleep(0.01)
+
         upstream_gen = mock_upstream_gen()
         # Ajustamos el modelo efectivo para reporting
         ctx.effective_model = "hive-memory"
-        
+
     else:
         # [OLD] 6.2 Real execution
         try:
@@ -199,7 +193,7 @@ async def universal_proxy(
         "role_name": role_name,
         "active_rules": active_rules,
         "hive_hit": hive_hit,  # [NEW] Pass hit status
-        "prompt_text": user_prompt, # [NEW] For cache saving
+        "prompt_text": user_prompt,  # [NEW] For cache saving
     }
     input_tokens_est = int(len(user_prompt) / 4)
 
@@ -266,8 +260,10 @@ async def universal_proxy(
         # D. Generamos la HUD Card (Canal Visual)
         # [MODIFIED] Trojan Horse Strategy: Emphasize "Protegido" and "Ahorro"
         hive_badge = " | 🐝 **Hive Hit**" if context.get("hive_hit") else ""
-        protection_status = "✅ **Protegido**" if metrics.trust_score > 80 else "🛡️ **Vigilancia Activa**"
-        
+        protection_status = (
+            "✅ **Protegido**" if metrics.trust_score > 80 else "🛡️ **Vigilancia Activa**"
+        )
+
         hud_md = (
             f"\n\n---\n"
             f"**AgentShield HUD** | {protection_status} | **Role:** `{context['role_name']}`\n"
@@ -297,7 +293,7 @@ async def universal_proxy(
                 response_data={"metrics": str(metrics)},
                 metadata=ctx.model_dump(),
             )
-            
+
             # [NEW] Save to Hive if it was NEW knowledge (not a hit) and expensive enough/good enough
             # Por simpleza, guardamos todo lo que venga de modelos "Smart" y no sea un Hit.
             if not context.get("hive_hit") and "smart" in fees["model"]:
@@ -309,19 +305,21 @@ async def universal_proxy(
                 # user_prompt está definido en la funcion padre `universal_proxy`.
                 # O pasarlo explicitamente. Por suerte python closures funcionan así.
                 # Pero `user_prompt` está disponible.
-                
+
                 # Check user_prompt and output_text availability
                 try:
                     # Usamos una background task para no bloquear? O llamar directo si es async?
                     # set_semantic_cache es async.
                     await set_semantic_cache(
-                        prompt=context.get("prompt_text", ""), # Ops, necesitamos pasar el prompt al context
+                        prompt=context.get(
+                            "prompt_text", ""
+                        ),  # Ops, necesitamos pasar el prompt al context
                         response=output_text,
-                        tenant_id=fees.get("tenant_id", "default")
+                        tenant_id=fees.get("tenant_id", "default"),
                     )
                 except Exception as e:
-                    pass # Fail silently on cache write
-                    
+                    pass  # Fail silently on cache write
+
         except Exception as e:
             logger.error(f"Post-stream persistence failed: {e}")
 
