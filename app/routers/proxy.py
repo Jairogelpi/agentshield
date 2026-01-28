@@ -139,6 +139,17 @@ async def universal_proxy(
 
     async def stream_with_hud_protocol(upstream, trace_id, start_ts, context, pricing, tokens_in):
         output_text = ""
+        
+        # 0. EL HANDSHAKE (2026 Standard)
+        # Notificamos al frontend que el túnel está blindado antes de pedir nada a la IA
+        handshake = {
+            "object": "agentshield.handshake",
+            "trace_id": trace_id,
+            "status": "SECURE",
+            "residency": os.getenv("SERVER_REGION", "EU-WEST-CONT"), # Soberanía de Datos 2026
+            "active_guards": ["PII", "Trust", "Arbitrage", "Carbon"]
+        }
+        yield f"data: {json.dumps(handshake)}\n\n"
 
         # A. Relay del Stream original
         async for chunk in upstream:
@@ -199,15 +210,16 @@ async def universal_proxy(
             active_rules=context["active_rules"],
         )
 
-        # D. Generamos la HUD Card (Elite Formatting)
-        protection_status = "✅ **Protegido**" if metrics.trust_score > 70 else "🛡️ **Vigilancia**"
+        # D. Generamos la HUD Card (2026 'Cyber-Financial' Aesthetic)
+        protection_status = "✅ Protegido" if metrics.trust_score > 70 else "🛡️ Vigilancia"
         hive_tag = " | 🐝 **Hive Mind**" if context.get("hive_hit") else ""
+        residency = os.getenv("SERVER_REGION", "EU")
         
         hud_md = (
             f"\n\n---\n"
-            f"**🛡️ AgentShield Status:** {protection_status} | **Role:** `{context['role_name']}`\n"
+            f"**🛡️ AgentShield Status:** {protection_status} | **Soberanía:** `{residency}` | **Role:** `{context['role_name']}`\n"
             f"**💰 Ahorro Real:** `${metrics.savings_usd:.4f}` | **⚡ Latencia:** `{metrics.latency_ms}ms`{hive_tag}\n"
-            f"**🌱 Impacto:** `-{metrics.co2_saved_grams:.2f}g CO2e` | **PII Filter:** `{metrics.pii_redactions}`"
+            f"**🌱 Impacto:** `-{metrics.co2_saved_grams:.2f}g CO2e` | **PII Redacted:** `{metrics.pii_redactions}`"
         )
 
         fake_chunk = {
@@ -218,7 +230,12 @@ async def universal_proxy(
             "choices": [{"index": 0, "delta": {"content": hud_md}, "finish_reason": "stop"}],
         }
         yield f"data: {json.dumps(fake_chunk)}\n\n"
-        yield build_structured_event(metrics)
+        
+        # Inyectamos el ID de recibo en las métricas para transparencia total
+        metrics_dict = metrics.model_dump()
+        metrics_dict["legal_proof_id"] = f"RX-{trace_id[-6:].upper()}"
+        
+        yield f"event: agentshield.hud\ndata: {json.dumps(metrics_dict)}\n\n"
         yield "data: [DONE]\n\n"
 
         # E. Persistencia Asíncrona vía BackgroundTasks (Production Best Practice)
