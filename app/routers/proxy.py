@@ -7,6 +7,7 @@ import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from opentelemetry import trace
 
 from app.limiter import limiter
 from app.schema import DecisionContext
@@ -14,22 +15,21 @@ from app.services.cache import get_semantic_cache, set_semantic_cache  # [NEW] C
 from app.services.carbon import carbon_governor
 from app.services.event_bus import event_bus
 from app.services.hud import HudMetrics, build_structured_event
-from opentelemetry import trace
 
 tracer = trace.get_tracer(__name__)
 
 # Servicios del Decision Graph
 from app.services.identity import VerifiedIdentity, verify_identity_envelope
+from app.services.limiter import charge_hierarchical_wallets, check_hierarchical_budget
 from app.services.llm_gateway import execute_with_resilience
 from app.services.pii_guard import pii_guard
 from app.services.pipeline import DecisionPipeline
 from app.services.pricing_sync import get_model_pricing
-from app.services.safety_engine import safety_engine
-from app.services.limiter import check_hierarchical_budget, charge_hierarchical_wallets
 from app.services.receipt_manager import receipt_manager
 
 # [NEW] Role Fabric
 from app.services.roles import role_fabric
+from app.services.safety_engine import safety_engine
 from app.services.semantic_router import semantic_router
 from app.services.tokenizer import get_token_count
 from app.services.trust_system import trust_system
@@ -50,7 +50,7 @@ async def universal_proxy(
     with tracer.start_as_current_span("universal_proxy") as span:
         span.set_attribute("tenant.id", str(identity.tenant_id))
         span.set_attribute("user.id", identity.user_id)
-        
+
         start_time = time.time()
 
     # 0. INIT REQUEST
@@ -88,7 +88,7 @@ async def universal_proxy(
     if cached_response:
         hive_hit = True
         ctx.log("CACHE", "🐝 Hive Hit! Serving from memory.")
-        
+
         # SIEM SIGNAL
         background_tasks.add_task(
             event_bus.publish,
@@ -97,7 +97,7 @@ async def universal_proxy(
             severity="INFO",
             details={"prompt_hash": hash(user_prompt), "savings_estimate": 0.05},
             actor_id=ctx.user_id,
-            trace_id=ctx.trace_id
+            trace_id=ctx.trace_id,
         )
 
         # Simulamos un generador compatible con el protocolo
@@ -158,7 +158,9 @@ async def universal_proxy(
     # Conteo de tokens real
     input_tokens_real = get_token_count(user_prompt, ctx.effective_model)
 
-    async def stream_with_hud_protocol(upstream, trace_id, start_ts, context, pricing, tokens_in, identity):
+    async def stream_with_hud_protocol(
+        upstream, trace_id, start_ts, context, pricing, tokens_in, identity
+    ):
         output_text = ""
         cumulative_tokens_out = 0
         is_killed = False
@@ -170,7 +172,7 @@ async def universal_proxy(
             "trace_id": trace_id,
             "status": "SECURE",
             "residencie": os.getenv("SERVER_REGION", "EU-WEST-CONT"),
-            "active_guards": ["PII", "Trust", "Arbitrage", "Carbon", "Safety-Stream"]
+            "active_guards": ["PII", "Trust", "Arbitrage", "Carbon", "Safety-Stream"],
         }
         yield f"data: {json.dumps(handshake)}\n\n"
 
@@ -191,18 +193,20 @@ async def universal_proxy(
                 # 1. SEGURIDAD DE SALIDA (Safety Guard)
                 # Escaneamos el chunk antes de entregarlo
                 is_threat, reason, safe_content = safety_engine.scan_chunk(content)
-                
+
                 if is_threat:
                     is_killed = True
                     kill_reason = f"SECURITY_ALERT: {reason}"
-                    break # Detener stream inmediatamente
-                
+                    break  # Detener stream inmediatamente
+
                 # 2. SEGUIMIENTO DE TOKENS Y PRESUPUESTO
                 cumulative_tokens_out += get_token_count(safe_content, pricing["model"])
-                
+
                 # Cada 50 tokens o al final, verificamos solvencia mid-stream
                 if cumulative_tokens_out % 50 == 0:
-                    current_cost = (tokens_in * pricing["effective"]["price_in"]) + (cumulative_tokens_out * pricing["effective"]["price_out"])
+                    current_cost = (tokens_in * pricing["effective"]["price_in"]) + (
+                        cumulative_tokens_out * pricing["effective"]["price_out"]
+                    )
                     # Verificamos si aún tiene presupuesto para continuar
                     allowed, fail_reason = await check_hierarchical_budget(identity, current_cost)
                     if not allowed:
@@ -211,7 +215,7 @@ async def universal_proxy(
                         break
 
                 output_text += safe_content
-                
+
                 # Re-empaquetamos el chunk con el contenido seguro (posiblemente redactado)
                 if isinstance(chunk, dict):
                     chunk["choices"][0]["delta"]["content"] = safe_content
@@ -219,7 +223,7 @@ async def universal_proxy(
                 else:
                     chunk_dict = chunk.model_dump()
                     chunk_dict["choices"][0]["delta"]["content"] = safe_content
-                
+
                 yield f"data: {json.dumps(chunk_dict)}\n\n"
 
         # B. MANEJO DE CIERRE FORZADO
@@ -229,11 +233,11 @@ async def universal_proxy(
                 "object": "agentshield.kill_signal",
                 "reason": kill_reason,
                 "trace_id": trace_id,
-                "content": f"\n\n🚨 **CONEXIÓN CERRADA POR SEGURIDAD:** {kill_reason}"
+                "content": f"\n\n🚨 **CONEXIÓN CERRADA POR SEGURIDAD:** {kill_reason}",
             }
             yield f"data: {json.dumps(kill_chunk)}\n\n"
             # No enviamos el HUD normal si fue matado por seguridad, o lo enviamos con advertencia
-        
+
         # C. Cálculos al Finalizar (Normal o por Kill)
         end_time = time.time()
         latency = int((end_time - start_ts) * 1000)
@@ -282,9 +286,11 @@ async def universal_proxy(
         # D. Generamos la HUD Card (Elite 2026 Cockpit)
         protection_status = "✅ Protegido" if metrics.trust_score > 70 else "🛡️ Vigilancia"
         risk_score = 100 - metrics.trust_score
-        privacy_shield = "🟢 ACTIVO" if metrics.pii_redactions > 0 or not is_killed else "🟡 SCANNING"
+        privacy_shield = (
+            "🟢 ACTIVO" if metrics.pii_redactions > 0 or not is_killed else "🟡 SCANNING"
+        )
         residency = os.getenv("SERVER_REGION", "EU-WEST")
-        
+
         hud_md = (
             f"\n\n---\n"
             f"**🛡️ AgentShield Status:** {protection_status} | **Soberanía:** `{residency}` | **Riesgo:** `{risk_score}/100`\n"
@@ -300,11 +306,11 @@ async def universal_proxy(
             "choices": [{"index": 0, "delta": {"content": hud_md}, "finish_reason": "stop"}],
         }
         yield f"data: {json.dumps(fake_chunk)}\n\n"
-        
+
         # Inyectamos el ID de recibo en las métricas para transparencia total
         metrics_dict = metrics.model_dump()
         metrics_dict["legal_proof_id"] = f"RX-{trace_id[-6:].upper()}"
-        
+
         yield f"event: agentshield.hud\ndata: {json.dumps(metrics_dict)}\n\n"
         yield "data: [DONE]\n\n"
 
@@ -320,10 +326,10 @@ async def universal_proxy(
                 "model_eff": pricing["model"],
                 "savings": metrics.savings_usd,
                 "pii_filtered": metrics.pii_redactions > 0,
-                "hive_hit": context.get("hive_hit")
+                "hive_hit": context.get("hive_hit"),
             },
             actor_id=ctx.user_id,
-            trace_id=ctx.trace_id
+            trace_id=ctx.trace_id,
         )
 
         background_tasks.add_task(
@@ -345,7 +351,13 @@ async def universal_proxy(
 
     return StreamingResponse(
         stream_with_hud_protocol(
-            upstream_gen, ctx.trace_id, start_time, user_context, pricing_context, input_tokens_real, identity
+            upstream_gen,
+            ctx.trace_id,
+            start_time,
+            user_context,
+            pricing_context,
+            input_tokens_real,
+            identity,
         ),
         media_type="text/event-stream",
     )
