@@ -5,8 +5,9 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 
-@dataclass
-class HudMetrics:
+from pydantic import BaseModel, Field
+
+class HudMetrics(BaseModel):
     request_id: str
     model_used: str
     provider: str
@@ -20,7 +21,7 @@ class HudMetrics:
     pii_redactions: int
     intent: str
     role: str | None = None
-    active_rules: list | None = None  # [NEW] List of strings
+    active_rules: list | None = Field(default_factory=list) # [NEW] List of strings
 
 
 def _get_risk_badge(score: int) -> str:

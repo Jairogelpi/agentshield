@@ -163,3 +163,35 @@ async def _async_db_update(provider, model, p_in, p_out):
         )
     except Exception as e:
         logger.error(f"Async DB Price Update failed: {e}")
+
+
+async def get_model_pricing(model: str) -> dict:
+    """
+    Recupera los precios de entrada y salida para un modelo.
+    Prioridad: Redis (O(1)) -> Supabase (O(N)) -> Fallback Seguro.
+    """
+    cache_key = f"price:{model}"
+    try:
+        cached = await redis_client.get(cache_key)
+        if cached:
+            p_in, p_out = map(float, cached.decode().split("|"))
+            return {"price_in": p_in, "price_out": p_out}
+    except Exception as e:
+        logger.error(f"Redis pricing lookup failed: {e}")
+
+    # Fallback a DB
+    try:
+        res = (
+            supabase.table("model_prices")
+            .select("price_in, price_out")
+            .eq("model", model)
+            .maybe_single()
+            .execute()
+        )
+        if res.data:
+            return {"price_in": res.data["price_in"], "price_out": res.data["price_out"]}
+    except Exception as e:
+        logger.error(f"DB pricing lookup failed: {e}")
+
+    # Fallback de Seguridad (Precios promedios 2026)
+    return {"price_in": 0.00001, "price_out": 0.00003}
