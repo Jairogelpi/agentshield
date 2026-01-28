@@ -26,7 +26,9 @@ async def global_security_guard(request: Request):
     try:
         if await redis_client.get(block_key):
             logger.warning(f"🛑 Blocked request from {client_ip} (Brute Force Protection)")
-            raise HTTPException(429, "Too many failed authentication attempts. Please try again later.")
+            raise HTTPException(
+                429, "Too many failed authentication attempts. Please try again later."
+            )
     except HTTPException:
         raise
     except Exception as e:
@@ -63,4 +65,3 @@ async def global_security_guard(request: Request):
             logger.error(f"⚠️ Could not update Brute Force counter in Redis: {re}")
 
         raise e
-
