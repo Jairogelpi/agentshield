@@ -34,6 +34,7 @@ async def get_tenant_from_header(request: Request):
         if not auth:
             raise HTTPException(401, "Missing Authorization")
         from app.logic import verify_api_key
+
         tenant_id = await verify_api_key(auth)
     return tenant_id
 

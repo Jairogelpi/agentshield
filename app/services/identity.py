@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+
 from fastapi import Header, HTTPException
 from jose import JWTError, jwt
 
@@ -51,10 +52,16 @@ async def verify_identity_envelope(authorization: str = Header(...)) -> Verified
                 # Busco en tabla publica de usuarios
                 # timeout de 2.0s para no bloquear el login
                 res = await asyncio.wait_for(
-                    asyncio.to_thread(lambda: supabase.table("users").select("*").eq("id", user_id).single().execute()),
-                    timeout=2.0
+                    asyncio.to_thread(
+                        lambda: supabase.table("users")
+                        .select("*")
+                        .eq("id", user_id)
+                        .single()
+                        .execute()
+                    ),
+                    timeout=2.0,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.error(f"⏰ Identity resolution timeout for {user_id}")
                 raise HTTPException(503, "Identity Service Timeout")
 
@@ -68,15 +75,21 @@ async def verify_identity_envelope(authorization: str = Header(...)) -> Verified
                 # Buscamos el departamento por defecto
                 try:
                     dept_res = await asyncio.wait_for(
-                        asyncio.to_thread(lambda: supabase.table("departments").select("id").eq("tenant_id", tenant_id).limit(1).execute()),
-                        timeout=2.0
+                        asyncio.to_thread(
+                            lambda: supabase.table("departments")
+                            .select("id")
+                            .eq("tenant_id", tenant_id)
+                            .limit(1)
+                            .execute()
+                        ),
+                        timeout=2.0,
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     dept_res = None
-                
+
                 dept_id = dept_res.data[0]["id"] if dept_res and dept_res.data else None
                 if not dept_id:
-                     logger.warning(f"⚠️ User {user_id} has no department in tenant {tenant_id}")
+                    logger.warning(f"⚠️ User {user_id} has no department in tenant {tenant_id}")
 
                 profile = {
                     "email": email,
@@ -90,12 +103,20 @@ async def verify_identity_envelope(authorization: str = Header(...)) -> Verified
                 if "department_id" not in profile or not profile["department_id"]:
                     try:
                         dept_res = await asyncio.wait_for(
-                            asyncio.to_thread(lambda: supabase.table("departments").select("id").eq("tenant_id", profile["tenant_id"]).limit(1).execute()),
-                            timeout=2.0
+                            asyncio.to_thread(
+                                lambda: supabase.table("departments")
+                                .select("id")
+                                .eq("tenant_id", profile["tenant_id"])
+                                .limit(1)
+                                .execute()
+                            ),
+                            timeout=2.0,
                         )
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         dept_res = None
-                    profile["department_id"] = dept_res.data[0]["id"] if dept_res and dept_res.data else None
+                    profile["department_id"] = (
+                        dept_res.data[0]["id"] if dept_res and dept_res.data else None
+                    )
 
                 if "tenant_id" not in profile:
                     profile["tenant_id"] = app_metadata.get("tenant_id")

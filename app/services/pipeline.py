@@ -1,17 +1,20 @@
 import asyncio
-import uuid
 import logging
+import uuid
+
 from fastapi import HTTPException, Request
+
 from app.config import settings
+from app.limiter import limiter
 from app.schema import DecisionContext
+from app.services.carbon import carbon_governor
+from app.services.pii_guard import pii_guard
 from app.services.roles import role_fabric
 from app.services.semantic_router import semantic_router
 from app.services.trust_system import trust_system
-from app.services.pii_guard import pii_guard
-from app.services.carbon import carbon_governor
-from app.limiter import limiter
 
 logger = logging.getLogger("agentshield.pipeline")
+
 
 class DecisionPipeline:
     @staticmethod
@@ -31,8 +34,8 @@ class DecisionPipeline:
 
         # 1. CONTEXT BUILDER
         trace_id = f"trc_{uuid.uuid4().hex[:12]}"
-        request.state.trace_id = trace_id # For global exception handler
-        
+        request.state.trace_id = trace_id  # For global exception handler
+
         ctx = DecisionContext(
             trace_id=trace_id,
             tenant_id=str(identity.tenant_id),
@@ -43,32 +46,35 @@ class DecisionPipeline:
             effective_model=requested_model,
         )
 
-        user_prompt = messages[-1]["content"] if messages and isinstance(messages[-1].get("content"), str) else ""
+        user_prompt = (
+            messages[-1]["content"]
+            if messages and isinstance(messages[-1].get("content"), str)
+            else ""
+        )
 
         # 2. INTENT CLASSIFIER (Semantic Gate)
         try:
             ctx.intent = await asyncio.wait_for(
-                semantic_router.classify_intent(ctx.tenant_id, user_prompt),
-                timeout=3.0
+                semantic_router.classify_intent(ctx.tenant_id, user_prompt), timeout=3.0
             )
             ctx.log("INTENT", f"Classified as {ctx.intent}")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(f"⏰ Timeout on Intent Classifier for {trace_id}")
-            ctx.intent = "general" # Default fallback
+            ctx.intent = "general"  # Default fallback
 
         # 3. RISK ENGINE (Trust Gate)
         try:
             trust_policy = await asyncio.wait_for(
                 trust_system.enforce_policy(ctx.tenant_id, ctx.user_id, ctx.requested_model),
-                timeout=2.0
+                timeout=2.0,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error(f"⚠️ Timeout on Trust System for {trace_id}. Locking for safety.")
             raise HTTPException(503, "Security Governance Timeout - Please retry")
 
         if trust_policy["requires_approval"]:
             raise HTTPException(403, detail=f"⛔ Trust Lock: {trust_policy['blocking_reason']}")
-        
+
         if trust_policy["effective_model"] != ctx.requested_model:
             ctx.effective_model = trust_policy["effective_model"]
             ctx.risk_mode = trust_policy["mode"]
@@ -83,7 +89,7 @@ class DecisionPipeline:
             if pii_result.get("changed"):
                 messages = pii_result["cleaned_messages"]
                 ctx.pii_redacted = True
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error(f"⚠️ Timeout on PII Guard for {trace_id}")
             raise HTTPException(503, "Security Compliance Timeout")
 
@@ -92,13 +98,18 @@ class DecisionPipeline:
             ctx.effective_model = "gpt-4o"
         elif "agentshield-fast" in ctx.requested_model:
             from app.services.arbitrage import arbitrage_engine
+
             try:
-                analysis = await asyncio.wait_for(arbitrage_engine.analyze_complexity(messages), timeout=2.0)
-                winner_id, reason, savings = await arbitrage_engine.find_best_bidder("gpt-4o-mini", analysis)
+                analysis = await asyncio.wait_for(
+                    arbitrage_engine.analyze_complexity(messages), timeout=2.0
+                )
+                winner_id, reason, savings = await arbitrage_engine.find_best_bidder(
+                    "gpt-4o-mini", analysis
+                )
                 if savings > 0 and winner_id:
                     ctx.effective_model = winner_id
-            except asyncio.TimeoutError:
-                pass # Use default model on timeout
+            except TimeoutError:
+                pass  # Use default model on timeout
 
         # 5.5 CARBON GATE
         if ctx.effective_model == ctx.requested_model:

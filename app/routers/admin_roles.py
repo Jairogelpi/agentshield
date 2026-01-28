@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Request
-from app.services.identity import verify_identity_envelope, VerifiedIdentity
+
+from app.services.identity import VerifiedIdentity, verify_identity_envelope
 from app.services.role_architect import role_architect
 
 router = APIRouter(prefix="/v1/admin/roles", tags=["Admin Roles"])
@@ -7,9 +8,9 @@ router = APIRouter(prefix="/v1/admin/roles", tags=["Admin Roles"])
 
 @router.post("/ai-provision")
 async def ai_provision_role(
-    request: Request, 
+    request: Request,
     description: str,
-    identity: VerifiedIdentity = Depends(verify_identity_envelope)
+    identity: VerifiedIdentity = Depends(verify_identity_envelope),
 ):
     """
     Crea y configura un rol completo usando IA (Role Architect).

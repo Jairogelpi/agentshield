@@ -1,20 +1,19 @@
 import logging
-from fastapi import Request, HTTPException
+
+from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
+
 from app.config import settings
 
 logger = logging.getLogger("agentshield.security")
+
 
 async def security_guard_middleware(request: Request, call_next):
     # 1. Bypass para Health Check y modo Desarrollo
     # Determinamos si es desarrollo basándonos en el entorno configurado
     is_dev = settings.ENVIRONMENT == "development"
-    
-    if (
-        request.url.path == "/health"
-        or request.method == "OPTIONS"
-        or is_dev
-    ):
+
+    if request.url.path == "/health" or request.method == "OPTIONS" or is_dev:
         return await call_next(request)
 
     # 2. VERIFICACIÓN DE CLOUDFLARE (El Candado)
@@ -25,7 +24,8 @@ async def security_guard_middleware(request: Request, call_next):
         real_ip = request.headers.get("cf-connecting-ip", request.client.host)
         logger.warning(f"⛔ Direct access blocked from {real_ip}")
         return JSONResponse(
-            status_code=403, content={"error": "Direct access forbidden. Use the authorized portal."}
+            status_code=403,
+            content={"error": "Direct access forbidden. Use the authorized portal."},
         )
 
     # 3. PROCESAR PETICIÓN

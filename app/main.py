@@ -1,29 +1,31 @@
-import logging
 import asyncio
+import logging
 import time
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Depends, HTTPException
+
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, ORJSONResponse
 
 from app.config import settings
+from app.db import recover_pending_charges, redis_client, supabase
 from app.middleware.auth import global_security_guard
 from app.middleware.security import security_guard_middleware
-from app.services.monitoring import setup_monitoring
 from app.services.cache import init_semantic_cache_index
 from app.services.market_oracle import update_market_rules
-from app.db import recover_pending_charges, redis_client, supabase
+from app.services.monitoring import setup_monitoring
 from app.services.pricing_sync import sync_universal_prices
 
 # Global state for Readiness Probe
 MODELS_LOADED = False
 logger = logging.getLogger("agentshield")
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 AgentShield Core Starting...")
-    
+
     # 1. Recovery & Initializations
     asyncio.create_task(recover_pending_charges())
     asyncio.create_task(init_semantic_cache_index())
@@ -36,6 +38,7 @@ async def lifespan(app: FastAPI):
         try:
             from app.services.pii_guard import redact_pii_sync
             from app.services.reranker import get_reranker_model
+
             await asyncio.to_thread(get_reranker_model)
             await asyncio.to_thread(redact_pii_sync, "Warmup")
             global MODELS_LOADED
@@ -47,6 +50,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(warmup_models())
     yield
     logger.info("🛑 AgentShield Core Shutting Down...")
+
 
 app = FastAPI(
     title="AgentShield API",
@@ -75,10 +79,25 @@ app.add_middleware(
 
 # Register Routers
 from app.routers import (
-    admin_chat, admin_roles, analytics, audit, authorize, 
-    compliance, dashboard, embeddings, feedback, forensics, 
-    images, invoices, onboarding, proxy, public_config, 
-    receipt, tools, trust, webhooks
+    admin_chat,
+    admin_roles,
+    analytics,
+    audit,
+    authorize,
+    compliance,
+    dashboard,
+    embeddings,
+    feedback,
+    forensics,
+    images,
+    invoices,
+    onboarding,
+    proxy,
+    public_config,
+    receipt,
+    tools,
+    trust,
+    webhooks,
 )
 
 app.include_router(public_config.router)
@@ -101,25 +120,27 @@ app.include_router(trust.router)
 app.include_router(admin_roles.router)
 app.include_router(webhooks.router)
 
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """
-    Catch-all for unexpected errors. 
+    Catch-all for unexpected errors.
     Ensures the client receives a structured JSON instead of a 500 error page.
     """
     # Try to extract trace_id from state if it was set
     trace_id = getattr(request.state, "trace_id", "unknown")
-    
+
     logger.error(f"🔥 UNHANDLED EXCEPTION [{trace_id}]: {exc}", exc_info=True)
-    
+
     return JSONResponse(
         status_code=500,
         content={
             "error": "Internal Server Error",
             "message": "An unexpected error occurred. Please contact support with the trace_id.",
-            "trace_id": trace_id
-        }
+            "trace_id": trace_id,
+        },
     )
+
 
 @app.get("/health")
 async def health_check(request: Request, full: bool = False):

@@ -18,14 +18,13 @@ from app.services.hud import HudMetrics, build_structured_event
 from app.services.identity import VerifiedIdentity, verify_identity_envelope
 from app.services.llm_gateway import execute_with_resilience
 from app.services.pii_guard import pii_guard
+from app.services.pipeline import DecisionPipeline
 from app.services.receipt_manager import receipt_manager
 
 # [NEW] Role Fabric
 from app.services.roles import role_fabric
 from app.services.semantic_router import semantic_router
 from app.services.trust_system import trust_system
-
-from app.services.pipeline import DecisionPipeline
 
 router = APIRouter()
 logger = logging.getLogger("agentshield.proxy")
@@ -58,10 +57,7 @@ async def universal_proxy(
     # 1. DECISION PIPELINE (The Modular Core)
     # ==============================================================================
     ctx, messages, trust_policy, active_role, pii_result = await DecisionPipeline.process_request(
-        request=request,
-        identity=identity, 
-        messages=messages, 
-        requested_model=requested_model
+        request=request, identity=identity, messages=messages, requested_model=requested_model
     )
 
     # ==============================================================================

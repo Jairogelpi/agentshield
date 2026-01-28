@@ -1,8 +1,9 @@
+import atexit
 import logging
 import os
 import queue
-import atexit
 from logging.handlers import QueueHandler, QueueListener
+
 import sentry_sdk
 from logtail import LogtailHandler
 from opentelemetry import trace
@@ -11,10 +12,12 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
 from app.config import settings
 from app.services.safe_logger import PIIRedactionFilter
 
 logger = logging.getLogger("agentshield")
+
 
 def setup_monitoring(app):
     """
@@ -32,7 +35,7 @@ def setup_monitoring(app):
     if logtail_token:
         handler = LogtailHandler(source_token=logtail_token)
         handler.addFilter(PIIRedactionFilter())
-        
+
         log_queue = queue.Queue(10000)
         queue_handler = QueueHandler(log_queue)
         listener = QueueListener(log_queue, handler)
