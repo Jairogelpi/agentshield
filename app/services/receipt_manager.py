@@ -17,7 +17,7 @@ logger = logging.getLogger("agentshield.auditor")
 
 
 async def create_forensic_receipt(
-    tenant_id: str, user_email: str, transaction_data: dict, policy_snapshot: dict
+    tenant_id: str, user_email: str, trace_id: str, transaction_data: dict, policy_snapshot: dict
 ) -> dict:
     """
     Genera un recibo firmado, encadenado al anterior y listo para auditoría.
@@ -48,6 +48,7 @@ async def create_forensic_receipt(
 
     evidence_payload = {
         "receipt_id": receipt_id,
+        "trace_id": trace_id,
         "timestamp": timestamp,
         "tenant_id": tenant_id,
         "actor": user_email,
@@ -73,6 +74,7 @@ async def create_forensic_receipt(
     # 5. PERSISTIR EN DB (Log Inmutable)
     receipt_record = {
         "id": receipt_id,
+        "trace_id": trace_id,
         "tenant_id": tenant_id,
         "content_json": evidence_payload,
         "signature": digital_signature,
@@ -133,12 +135,14 @@ class ReceiptManager:
         receipt_record = await create_forensic_receipt(
             tenant_id=tenant_id,
             user_email=user_id,
+            trace_id=request_data.get("trace_id", "TRC-UNKNOWN"),
             transaction_data=transaction_data,
             policy_snapshot={
                 "trust_score": metadata.get("trust_score"),
                 "intent": metadata.get("intent"),
                 "risk_mode": metadata.get("risk_mode"),
                 "dept_id": metadata.get("dept_id"),
+                "trace_id": request_data.get("trace_id")
             },
         )
 

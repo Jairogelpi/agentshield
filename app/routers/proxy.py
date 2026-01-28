@@ -229,6 +229,18 @@ async def universal_proxy(
         # B. MANEJO DE CIERRE FORZADO
         if is_killed:
             logger.error(f"❌ Session Terminated mid-stream: {kill_reason}")
+            
+            # SIEM ALERT (Critical)
+            background_tasks.add_task(
+                event_bus.publish,
+                tenant_id=ctx.tenant_id,
+                event_type="SECURITY_THREAT_KILL",
+                severity="CRITICAL",
+                details={"reason": kill_reason, "stream_progress": len(output_text)},
+                actor_id=ctx.user_id,
+                trace_id=ctx.trace_id
+            )
+
             kill_chunk = {
                 "object": "agentshield.kill_signal",
                 "reason": kill_reason,

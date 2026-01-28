@@ -12,6 +12,7 @@ from app.services.pii_guard import pii_guard
 from app.services.roles import role_fabric
 from app.services.semantic_router import semantic_router
 from app.services.trust_system import trust_system
+from app.services.event_bus import event_bus
 
 logger = logging.getLogger("agentshield.pipeline")
 
@@ -73,6 +74,15 @@ class DecisionPipeline:
             raise HTTPException(503, "Security Governance Timeout - Please retry")
 
         if trust_policy["requires_approval"]:
+            # SIEM ALERT
+            asyncio.create_task(event_bus.publish(
+                tenant_id=ctx.tenant_id,
+                event_type="POLICY_BLOCK",
+                severity="WARNING",
+                details={"reason": trust_policy['blocking_reason'], "gate": "TRUST_ENGINE"},
+                actor_id=ctx.user_id,
+                trace_id=ctx.trace_id
+            ))
             raise HTTPException(403, detail=f"⛔ Trust Lock: {trust_policy['blocking_reason']}")
 
         if trust_policy["effective_model"] != ctx.requested_model:
@@ -83,6 +93,15 @@ class DecisionPipeline:
         try:
             pii_result = await asyncio.wait_for(pii_guard.scan(messages), timeout=3.0)
             if pii_result.get("blocked"):
+                # SIEM ALERT
+                asyncio.create_task(event_bus.publish(
+                    tenant_id=ctx.tenant_id,
+                    event_type="PII_VIOLATION",
+                    severity="CRITICAL",
+                    details={"findings": pii_result.get("findings")},
+                    actor_id=ctx.user_id,
+                    trace_id=ctx.trace_id
+                ))
                 raise HTTPException(
                     400, "🛡️ AgentShield Security: Envío bloqueado por datos altamente sensibles."
                 )
