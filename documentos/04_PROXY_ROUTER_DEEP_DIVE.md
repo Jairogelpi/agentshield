@@ -13,33 +13,46 @@ A diferencia de otros proxies que son un bloque de código gigante y difícil de
 *   **La Razón Estratégica:** Permite añadir nuevas capas de seguridad (ej. detección de alucinaciones o filtros de sesgo) en el futuro sin romper el sistema de chat. Es una arquitectura **"Future-Proof"**.
 *   **Valor:** Agilidad total. Podemos adaptar el comportamiento de la IA a nuevas leyes o políticas de empresa en minutos.
 
-### 2. Memoria Colmena: El Cerebro Colectivo (Hive Memory)
-No es un simple "caché". Es un sistema de **aprendizaje dinámico**.
-*   **La Razón Estratégica:** Si un empleado resuelve un problema complejo con la IA, AgentShield "aprende" esa respuesta perfecta. El siguiente empleado que pregunte lo mismo obtendrá la respuesta **instantáneamente y a coste $0**. 
-*   **Valor:** Transforma el gasto recurrente en una **inversión de conocimiento**. Cuanto más se usa AgentShield, más barato y más inteligente se vuelve.
+### 2. Memoria Colmena Evolutiva (Evolutionary Hive Mind)
+No es un simple "caché". Es un sistema de **aprendizaje dinámico y federado**.
+*   **La Razón Estratégica:** Si varios empleados resuelven problemas relacionados, AgentShield **sintetiza** ese conocimiento. El siguiente empleado obtendrá una respuesta enriquecida por la sabiduría colectiva de la empresa.
+*   **Valor:** Transforma el gasto recurrente en un **activo de conocimiento inmutable**. Cuanto más se usa AgentShield, más inteligente y barato se vuelve.
 
-### 3. El HUD: Refuerzo Positivo en Tiempo Real
-Esta es nuestra arma secreta de retención y transparencia.
-*   **La Razón Estratégica:** Inyectamos métricas invisibles en el flujo de datos que el frontend convierte en una tarjeta visual al final de cada respuesta. 
-*   **Valor:** Le recordamos al usuario (y al gestor) en cada segundo: *"Acabas de ahorrar $0.45"*, *"Has evitado 2g de CO2"*, *"Tus datos están protegidos"*. Esto elimina la fricción y justifica el valor de la plataforma en cada interacción.
+### 3. Gobernanza de Agentes (2-Man Rule Tooling)
+AgentShield es el primer proxy que entiende lo que los agentes intentan hacer **antes** de que lo hagan.
+*   **La Razón Estratégica:** Interceptamos los `tool_calls`. Si un agente intenta una acción sensible, detenemos el flujo y solicitamos aprobación.
+*   **Valor:** Elimina el riesgo de "Shadow AI Agents" actuando por su cuenta. Es el control total sobre la autonomía.
+
+### 4. Seguridad de Salida Dinámica (Real-time Safety)
+No esperamos a que termine el mensaje. Escaneamos cada chunk de datos.
+*   **La Razón Estratégica:** Si detectamos un Jailbreak o una filtración de PII corporativa en la respuesta de la IA, el **Kill-Switch** corta la conexión al instante.
+*   **Valor:** Protección total contra robo de datos y manipulación de modelos.
+
+### 5. El HUD: Transparencia y Ahorro Real
+Ya no son estimaciones; es realidad financiera.
+*   **La Razón Estratégica:** Usamos `tiktoken` y sincronización directa con `litellm` para calcular costes y ahorros con céntimos de dólar de precisión. El HUD muestra la **Soberanía de Datos** (Región) y el estado de gobernanza.
+*   **Valor:** Justifica el Retorno de Inversión (ROI) en cada token.
 
 ---
 
 ## 🛠️ Anatomía de una Transacción "Elite"
 
-El código en `proxy.py` sigue un flujo de tres fases diseñado para la máxima seguridad:
+El código en `proxy.py` sigue un flujo de tres fases Zenith:
 
-1.  **Fase de Pre-Vuelo:** Antes de tocar la IA, el Pipeline valida identidad, presupuesto y riesgo. Si algo no cuadra, la transacción se aborta antes de gastar un solo token.
-2.  **Streaming con Inyección:** Mientras la IA responde, el Proxy actúa como un "Man-in-the-middle" beneficioso, preparando los cálculos de latencia y ahorro en paralelo.
-3.  **Cierre de Ciclo Silencioso:** Una vez la IA termina, el Proxy firma el recibo criptográfico y, si la respuesta es valiosa, actualiza la Memoria Colmena en segundo plano. El usuario nunca siente latencia, pero el sistema es cada vez más robusto.
+1.  **Fase de Pre-Vuelo:** Validación de identidad, presupuesto y riesgo vía Pipeline modular.
+2.  **Streaming con Procesamiento Activo:**
+    - **Buffered Tools:** Acumulación y revisión de llamadas a funciones.
+    - **Safety Scan:** Revisión proactiva de contenido.
+    - **Mid-stream Kill:** Corte por presupuesto o seguridad.
+3.  **Cierre Inmutable:** Generación de recibo firmado, actualización de SIEM federado y persistencia en Memoria Colmena.
 
 ---
 
 ## 📈 Impacto Directo en el Negocio
 
-*   **Rentabilidad Inmediata:** Gracias a la Memoria Colmena, el ahorro de costes es exponencial, no lineal.
-*   **Blindaje de Reputación:** Al filtrar la salida en tiempo real, evitamos que la IA diga algo que pueda comprometer legalmente a la empresa.
-*   **Adopción sin Miedo:** Los empleados usan la IA con confianza porque saben que hay un "Guardián" (el Proxy) velando por su seguridad y la de la empresa.
+*   **Gobernanza Total:** Controla no solo lo que la IA dice, sino lo que la IA **hace**.
+*   **Ahorro Exponencial:** La Memoria Colmena reduce el CAPEX de IA a medida que la organización aprende.
+*   **Compliance 2026:** Preparado para Auditorías Forenses y Soberanía de Datos.
 
 ---
 
@@ -48,4 +61,4 @@ Para llevar este archivo al nivel absoluto de excelencia:
 *   **Estimación Predictiva Eficiente:** Usar el `estimator.py` para que el HUD sea preciso incluso antes de que la IA empiece a escribir (dar feedback instantáneo de coste).
 *   **Múltiples Nodos de Hive:** Sincronizar la memoria entre diferentes regiones del mundo para empresas globales.
 
-**AgentShield no es un middleware más; es el Sistema Operativo que hace que la IA sea viable para el mundo empresarial.**
+**AgentShield Proxy es la infraestructura definitiva para la era de la IA Autónoma y Segura.**

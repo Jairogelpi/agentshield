@@ -11,7 +11,8 @@ from opentelemetry import trace
 
 from app.limiter import limiter
 from app.schema import DecisionContext
-from app.services.cache import get_semantic_cache, set_semantic_cache  # [NEW] Cache Services
+from app.services.cache import set_semantic_cache
+from app.services.hive_mind import hive_mind
 from app.services.carbon import carbon_governor
 from app.services.event_bus import event_bus
 from app.services.hud import HudMetrics, build_structured_event
@@ -34,6 +35,7 @@ from app.services.semantic_router import semantic_router
 from app.services.tokenizer import get_token_count
 from app.services.tool_governor import governor
 from app.services.trust_system import trust_system
+from app.services.observer import observer_service
 
 router = APIRouter()
 logger = logging.getLogger("agentshield.proxy")
@@ -77,45 +79,51 @@ async def universal_proxy(
     # 2. STREAMING EXECUTION (Now with Hive Mind support)
     # ==============================================================================
 
-    # [NEW] 6.1 Hive Memory Check
+    # [EVOLUTIONARY] 6.1 Hive Mind Query (Federated Intelligence)
+    hive_result = None
     hive_hit = False
-    cached_response = None
-
-    # Solo buscamos en caché si no es un regeneración forzada (opcional)
-    # Y si el trust policy lo permite
+    
     if trust_policy.get("allow_cache", True):
-        cached_response = await get_semantic_cache(prompt=user_prompt, tenant_id=ctx.tenant_id)
+        hive_result = await hive_mind.query_hive(prompt=user_prompt, tenant_id=ctx.tenant_id)
 
-    if cached_response:
+    if hive_result:
         hive_hit = True
-        ctx.log("CACHE", "🐝 Hive Hit! Serving from memory.")
-
+        source = hive_result["source"]
+        cached_response = hive_result["content"]
+        
+        ctx.log("HIVE", f"🐝 Hive Hit! Source: {source}")
+        
         # SIEM SIGNAL
         background_tasks.add_task(
             event_bus.publish,
             tenant_id=ctx.tenant_id,
-            event_type="HIVE_CACHE_HIT",
+            event_type="HIVE_KNOWLEDGE_HIT",
             severity="INFO",
-            details={"prompt_hash": hash(user_prompt), "savings_estimate": 0.05},
+            details={
+                "source": source, 
+                "confidence": hive_result.get("confidence"),
+                "records_used": hive_result.get("records_used", 1)
+            },
             actor_id=ctx.user_id,
             trace_id=ctx.trace_id,
         )
 
-        # Simulamos un generador compatible con el protocolo
-        async def mock_upstream_gen():
-            # Simulamos tokens para el efecto de escritura si se desea, o dump completo
-            # Para UX "God Tier", entregamos rápido pero en chunks para no romper el frontend
-            chunk_size = 10
-            words = cached_response.split(" ")
-            for i in range(0, len(words), chunk_size):
-                chunk_text = " ".join(words[i : i + chunk_size]) + " "
-                yield {"choices": [{"delta": {"content": chunk_text}}], "model": "hive-memory-v1"}
-                # Pequeño sleep para que se sienta fluido, no instantáneo (opcional)
-                # await asyncio.sleep(0.01)
+        async def hive_stream_gen():
+            # Formatting as 'Collective Wisdom' for UX if it's a synthesis
+            prefix = ""
+            if source == "HIVE_SYNTHESIS":
+                prefix = "🌌 **AgentShield Collective Wisdom (Synthesized):**\n\n"
+            
+            words = (prefix + cached_response).split(" ")
+            for i in range(0, len(words), 8):
+                chunk_text = " ".join(words[i : i + 8]) + " "
+                yield {"choices": [{"delta": {"content": chunk_text}}], "model": f"as-hive-{source.lower()}"}
+                # Pequeña pausa para no saturar
+                await asyncio.sleep(0.005)
 
-        upstream_gen = mock_upstream_gen()
-        # Ajustamos el modelo efectivo para reporting
-        ctx.effective_model = "hive-memory"
+        upstream_gen = hive_stream_gen()
+        ctx.effective_model = f"hive-{source.lower()}"
+        ctx.user_context["hive_source"] = source # Inyectamos para el HUD
 
     else:
         # [OLD] 6.2 Real execution
@@ -150,9 +158,10 @@ async def universal_proxy(
         "trust_score": trust_policy["trust_score"],
         "pii_redactions": pii_result.get("findings_count", 0),
         "intent": ctx.intent,
-        "role_name": role_name,
-        "active_rules": active_rules,
+        "role_name": active_role.get("name", "Unknown"),
+        "active_rules": active_role.get("active_rules", []),
         "hive_hit": hive_hit,
+        "hive_source": getattr(ctx, "user_context", {}).get("hive_source", "NONE"),
         "prompt_text": user_prompt,
     }
 
@@ -367,7 +376,16 @@ async def universal_proxy(
             active_rules=context["active_rules"],
         )
 
-        # D. Generamos la HUD Card (Elite 2026 Cockpit)
+        # D. EVALUACIÓN ETICA Y ALUCINACIONES (2026 Observer)
+        observer_results = await observer_service.evaluate_response(
+            prompt=context.get("prompt_text"),
+            response_text=output_text,
+            context_messages=messages, # Using the original messages list from closure
+            tenant_id=identity.tenant_id,
+            trace_id=trace_id
+        )
+
+        # E. Generamos la HUD Card (Elite 2026 Cockpit)
         protection_status = "✅ Protegido" if metrics.trust_score > 70 else "🛡️ Vigilancia"
         risk_score = 100 - metrics.trust_score
         privacy_shield = (
@@ -375,10 +393,19 @@ async def universal_proxy(
         )
         agent_gov = "🔒 GOVERNED" if governed_tool_count > 0 else "👀 MONITORING"
         residency = os.getenv("SERVER_REGION", "EU-WEST")
+        
+        # Marcadores éticos
+        faith_status = "💎 Veraz" if observer_results["faithfulness_score"] > 0.85 else "⚠️ Revisar"
+        neutral_status = "⚖️ Neutral" if observer_results["neutrality_score"] > 0.85 else "🚩 Sesgado"
+        
+        # Metadata Colmena
+        hive_status = "🧬 EVO-HIVE" if context.get("hive_source") == "HIVE_SYNTHESIS" else "🐝 MEMORY"
+        hive_label = f" | **Hive:** `{hive_status}`" if hive_hit else ""
 
         hud_md = (
             f"\n\n---\n"
-            f"**🛡️ AgentShield Status:** {protection_status} | **Agents:** `{agent_gov}` | **Riesgo:** `{risk_score}/100`\n"
+            f"**🛡️ AgentShield Status:** {protection_status}{hive_label} | **Agents:** `{agent_gov}` | **Riesgo:** `{risk_score}/100`\n"
+            f"**🧠 Inteligencia:** {faith_status} `{int(observer_results['faithfulness_score']*100)}%` | {neutral_status} `{int(observer_results['neutrality_score']*100)}%`\n"
             f"**💰 Ahorro Real:** `${metrics.savings_usd:.4f}` | **⚡ Latencia:** `{metrics.latency_ms}ms` | **Soberanía:** `{residency}`\n"
             f"**🌱 Impacto:** `-{metrics.co2_saved_grams:.2f}g CO2e` | **PII Redacted:** `{metrics.pii_redactions}`"
         )

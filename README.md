@@ -62,14 +62,18 @@ El sistema se despliega como un SaaS completo (Zero Install):
 
 ## 📚 Documentación Técnica (Deep Dives)
 
-*   [**0. Master Plan**](documentation/00_MASTER_PLAN.md)
-*   [**1. Infraestructura**](documentation/01_INFRAESTRUCTURA.md)
-*   [**2. Seguridad Zero Trust**](documentation/02_SEGURIDAD.md)
-*   [**3. Motor Financiero**](documentation/03_FINANCIERO.md)
-*   [**4. Proxy Router**](documentation/04_PROXY.md)
-*   [**6. Estrategia Frontend**](documentation/06_FRONTEND_STRATEGY.md)
-*   [**7. Secure RAG Vault**](documentation/07_SECURE_RAG_VAULT.md)
-*   [**8. Evolutionary AI**](documentation/08_EVOLUTIONARY_AI.md)
+*   [**01. Auth Middleware (God Tier)**](documentos/01_AUTH_MIDDLEWARE_GOD_TIER.md)
+*   [**02. Security Middleware (God Tier)**](documentos/02_SECURITY_MIDDLEWARE_GOD_TIER.md)
+*   [**03. Routers Overview**](documentos/03_ROUTERS_OVERVIEW.md)
+*   [**04. Proxy Router (Absolute Zenith)**](documentos/04_PROXY_ROUTER_DEEP_DIVE.md)
+*   [**05. Authorize Router**](documentos/05_AUTHORIZE_ROUTER_DEEP_DIVE.md)
+*   [**06. Receipt Router**](documentos/06_RECEIPT_ROUTER_DEEP_DIVE.md)
+*   [**09. Forensics & Audit**](documentos/09_FORENSICS_ROUTER_DEEP_DIVE.md)
+*   [**15. Safety Engine (Live Scan)**](documentos/15_SAFETY_ENGINE_DEEP_DIVE.md)
+*   [**16. Tool Governor (Agent Gov)**](documentos/16_TOOL_GOVERNOR_DEEP_DIVE.md)
+*   [**17. Identity Service (Verified Envelopes)**](documentos/17_IDENTITY_SERVICE_DEEP_DIVE.md)
+*   [**18. Observer Service (Ethics & Truth)**](documentos/18_OBSERVER_SERVICE_DEEP_DIVE.md)
+*   [**19. Evolutionary Hive Mind (Collective Wisdom)**](documentos/19_HIVE_MIND_DEEP_DIVE.md)
 
 ---
 

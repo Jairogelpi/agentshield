@@ -27,76 +27,46 @@ La mayoría de los sistemas usan listas fijas de rutas permitidas. Nosotros usam
 No solo validamos llaves, vigilamos el comportamiento. Usamos **Redis** para recordar quién está fallando.
 *   **Por qué es mejor:** Si una IP intenta 5 veces entrar con llaves falsas, el sistema la "borra del mapa" temporalmente. Esto protege tu Base de Datos de ataques inquisitivos y mantiene tu sistema disponible para los usuarios reales. Es **autodefensa activa**.
 
-### 3. El Sello de Calidad (Request State Injection)
-Este es el secreto de la velocidad de AgentShield. Una vez que el middleware confirma quién eres, te pone un "sello invisible" en la petición.
-*   **Por qué es mejor:** Normalmente, cada vez que una petición pasa por diferentes capas (pagos, auditoría, IA), el sistema tiene que volver a preguntar: "¿Quién es este?". Aquí, el middleware lo resuelve una vez y lo "inyecta" en `request.state.tenant_id`. Todo el resto de la aplicación es **mucho más rápida** porque ya confía en el veredicto del middleware.
+### 3. El Sello de Calidad (Traceability Anchor)
+Este es el hilo conductor de la verdad. Inyectamos un `trace_id` universal desde el primer milisegundo.
+*   **Por qué es mejor:** Si hay un error, el sistema te da un `X-Request-ID`. Con ese código, puedes rastrear exactamente qué pasó en los logs, las políticas y hasta la respuesta final de la IA. Es **transparencia forense**.
 
-### 4. Resiliencia Total (Graceful Degradation)
-El sistema está diseñado para no rendirse. Si la infraestructura de soporte (como Redis) tiene un parpadeo, AgentShield no se detiene.
-*   **Por qué es mejor:** El middleware está envuelto en protecciones que permiten que, si el sistema de "fuerza bruta" falla, el usuario legítimo pueda seguir trabajando. Priorizamos la **Disponibilidad** sin sacrificar la seguridad de fondo.
+### 4. Señalización SIEM (Immune System Signaling)
+No solo bloqueamos; alertamos. Usamos el `event_bus` para notificar fallos en tiempo real.
+*   **Por qué es mejor:** Si una IP es bloqueada por fuerza bruta, el sistema emite un evento `AUTH_BRUTE_FORCE_LIMIT_REACHED` de severidad `CRITICAL`. Esto activa playbooks de seguridad automatizados. Es **seguridad proactiva**.
 
-### 5. Observabilidad Forense (Distributed Tracing)
-Convertimos cada petición en un hilo rastreable. Inyectamos un `trace_id` único desde el primer milisegundo.
-*   **Por qué es mejor:** Si hay un error, el sistema te da un `X-Request-ID`. Con ese código, puedes rastrear exactamente qué pasó en los logs, desde la seguridad hasta la respuesta final de la IA. Es **transparencia absoluta**.
+### 5. Resiliencia de Clase Enterprise
+El sistema está diseñado para no rendirse. Si Redis parpadea, AgentShield prioriza la disponibilidad sin comprometer la validación de llaves principal.
 
 ---
 
 ## 📄 El Código de Elite (`app/middleware/auth.py`)
 
 ```python
-import logging
-from fastapi import HTTPException, Request
-from app.config import settings
-from app.db import redis_client
-from app.limiter import get_real_ip_address
-from app.logic import verify_api_key
-
-logger = logging.getLogger("agentshield.auth")
-
 async def global_security_guard(request: Request):
-    # --- NIVEL 1: EL FILTRO DINÁMICO ---
-    path = request.url.path
-    if any(path.startswith(prefix) for prefix in settings.AUTH_WHITELIST):
-        return
-
-    if request.method == "OPTIONS":
-        return
-
-    # --- NIVEL 2: EL ESCUDO ANTI-ATAQUE CON RESILIENCIA ---
+    # --- NIVEL 0: TELEMETRÍA Y ANCLAJE ---
+    trace_id = getattr(request.state, "trace_id", "TRC-UNKNOWN")
     client_ip = get_real_ip_address(request)
-    block_key = f"auth_block:{client_ip}"
     
-    try:
-        if await redis_client.get(block_key):
-            logger.warning(f"🛑 Acceso denegado a {client_ip} (Bloqueo preventivo)")
-            raise HTTPException(429, "Demasiados intentos. Por favor, espera unos minutos.")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"⚠️ Resilience: Redis down, skipping brute force check: {e}")
+    # --- NIVEL 1: FILTRO DINÁMICO ---
+    if any(path.startswith(p) for p in settings.AUTH_WHITELIST): return
 
-    # --- NIVEL 3: VALIDACIÓN E INYECCIÓN DE ALTA VELOCIDAD ---
+    # --- NIVEL 2: ESCUDO ANTI-ATAQUE CON SIEM ---
+    block_key = f"auth_block:{client_ip}"
+    if await redis_client.get(block_key):
+        # SIEM SIGNAL
+        await event_bus.publish(event_type="AUTH_BRUTE_FORCE_BLOCKED", severity="INFO", ...)
+        raise HTTPException(429, "Too many attempts.")
+
+    # --- NIVEL 3: VALIDACIÓN E INYECCIÓN ---
     try:
         tenant_id = await verify_api_key(request.headers.get("Authorization"))
         request.state.tenant_id = tenant_id
-        
-        try:
-            await redis_client.delete(f"auth_fail:{client_ip}")
-        except:
-            pass
-        
     except HTTPException as e:
-        # Registro inteligente de fallos
-        fail_key = f"auth_fail:{client_ip}"
-        try:
-            fails = await redis_client.incr(fail_key)
-            if fails == 1:
-                await redis_client.expire(fail_key, settings.AUTH_BRUTE_FORCE_WINDOW)
-            if fails >= settings.AUTH_BRUTE_FORCE_LIMIT:
-                await redis_client.setex(block_key, settings.AUTH_BRUTE_FORCE_WINDOW, "blocked")
-        except:
-            pass
-            
+        # DETECCIÓN DE FUERZA BRUTA Y ALERTA CRÍTICA
+        fails = await redis_client.incr(f"auth_fail:{client_ip}")
+        if fails >= settings.AUTH_BRUTE_FORCE_LIMIT:
+            await event_bus.publish(event_type="AUTH_BRUTE_FORCE_LIMIT_REACHED", severity="CRITICAL", ...)
         raise e
 ```
 
