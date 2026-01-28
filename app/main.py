@@ -101,6 +101,26 @@ app.include_router(trust.router)
 app.include_router(admin_roles.router)
 app.include_router(webhooks.router)
 
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """
+    Catch-all for unexpected errors. 
+    Ensures the client receives a structured JSON instead of a 500 error page.
+    """
+    # Try to extract trace_id from state if it was set
+    trace_id = getattr(request.state, "trace_id", "unknown")
+    
+    logger.error(f"🔥 UNHANDLED EXCEPTION [{trace_id}]: {exc}", exc_info=True)
+    
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal Server Error",
+            "message": "An unexpected error occurred. Please contact support with the trace_id.",
+            "trace_id": trace_id
+        }
+    )
+
 @app.get("/health")
 async def health_check(request: Request, full: bool = False):
     if not MODELS_LOADED:

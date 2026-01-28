@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from fastapi import Header, HTTPException
@@ -45,29 +46,34 @@ async def verify_identity_envelope(authorization: str = Header(...)) -> Verified
         if cached_profile:
             profile = json.loads(cached_profile)
         else:
-            # 3. Si no esta en cache, resolver identidad completa (SIN MOCKS)
-
-            # Busco en tabla publica de usuarios
-            res = supabase.table("users").select("*").eq("id", user_id).single().execute()
+            # 3. Si no esta en cache, resolver identidad completa
+            try:
+                # Busco en tabla publica de usuarios
+                # timeout de 2.0s para no bloquear el login
+                res = await asyncio.wait_for(
+                    asyncio.to_thread(lambda: supabase.table("users").select("*").eq("id", user_id).single().execute()),
+                    timeout=2.0
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"⏰ Identity resolution timeout for {user_id}")
+                raise HTTPException(503, "Identity Service Timeout")
 
             if not res.data:
                 # Fallback: Usar metadata del token + Tenant Default
                 tenant_id = app_metadata.get("tenant_id")
                 if not tenant_id:
-                    # Si no hay tenant en metadata, error fatal (Zero Trust)
-                    # raise HTTPException(403, "Identity Verification Failed: No Tenant Found")
-                    # Fallback de emergencia para desarrollo/demo si no hay tenant
-                    tenant_id = "default_tenant"  # O manejar segun logica de negocio
+                    tenant_id = "default_tenant"
 
-                # Buscamos el departamento por defecto del Tenant real
-                dept_res = (
-                    supabase.table("departments")
-                    .select("id")
-                    .eq("tenant_id", tenant_id)
-                    .limit(1)
-                    .execute()
-                )
-                dept_id = dept_res.data[0]["id"] if dept_res.data else "none"
+                # Buscamos el departamento por defecto
+                try:
+                    dept_res = await asyncio.wait_for(
+                        asyncio.to_thread(lambda: supabase.table("departments").select("id").eq("tenant_id", tenant_id).limit(1).execute()),
+                        timeout=2.0
+                    )
+                except asyncio.TimeoutError:
+                    dept_res = None
+                
+                dept_id = dept_res.data[0]["id"] if dept_res and dept_res.data else "none"
 
                 profile = {
                     "email": email,
@@ -79,14 +85,14 @@ async def verify_identity_envelope(authorization: str = Header(...)) -> Verified
                 profile = res.data
                 # Enriquecer perfil incompleto
                 if "department_id" not in profile or not profile["department_id"]:
-                    dept_res = (
-                        supabase.table("departments")
-                        .select("id")
-                        .eq("tenant_id", profile["tenant_id"])
-                        .limit(1)
-                        .execute()
-                    )
-                    profile["department_id"] = dept_res.data[0]["id"] if dept_res.data else "none"
+                    try:
+                        dept_res = await asyncio.wait_for(
+                            asyncio.to_thread(lambda: supabase.table("departments").select("id").eq("tenant_id", profile["tenant_id"]).limit(1).execute()),
+                            timeout=2.0
+                        )
+                    except asyncio.TimeoutError:
+                        dept_res = None
+                    profile["department_id"] = dept_res.data[0]["id"] if dept_res and dept_res.data else "none"
 
                 if "tenant_id" not in profile:
                     profile["tenant_id"] = app_metadata.get("tenant_id")

@@ -58,6 +58,7 @@ async def universal_proxy(
     # 1. DECISION PIPELINE (The Modular Core)
     # ==============================================================================
     ctx, messages, trust_policy, active_role, pii_result = await DecisionPipeline.process_request(
+        request=request,
         identity=identity, 
         messages=messages, 
         requested_model=requested_model
