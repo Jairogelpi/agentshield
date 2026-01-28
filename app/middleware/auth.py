@@ -16,7 +16,7 @@ async def global_security_guard(request: Request):
     path = request.url.path
     trace_id = getattr(request.state, "trace_id", "TRC-UNKNOWN")
     client_ip = get_real_ip_address(request)
-    
+
     # 1. Whitelist con soporte de prefijos (para /docs/, /health/, etc.)
     if any(path.startswith(prefix) for prefix in settings.AUTH_WHITELIST):
         return
@@ -29,17 +29,19 @@ async def global_security_guard(request: Request):
 
     try:
         if await redis_client.get(block_key):
-            logger.warning(f"🛑 [Block] Brute Force attempt blocked from {client_ip} | Trace: {trace_id}")
-            
+            logger.warning(
+                f"🛑 [Block] Brute Force attempt blocked from {client_ip} | Trace: {trace_id}"
+            )
+
             # SIEM ALERT (Info level since it's already blocked)
             await event_bus.publish(
                 tenant_id="SYSTEM",
                 event_type="AUTH_BRUTE_FORCE_BLOCKED",
                 severity="INFO",
                 details={"ip": client_ip, "reason": "Previous limit reached"},
-                trace_id=trace_id
+                trace_id=trace_id,
             )
-            
+
             raise HTTPException(
                 429, "Too many failed authentication attempts. Please try again later."
             )
@@ -74,7 +76,7 @@ async def global_security_guard(request: Request):
                 event_type="AUTH_FAILURE",
                 severity="WARNING",
                 details={"ip": client_ip, "fails_count": fails},
-                trace_id=trace_id
+                trace_id=trace_id,
             )
 
             if fails >= settings.AUTH_BRUTE_FORCE_LIMIT:
@@ -88,7 +90,7 @@ async def global_security_guard(request: Request):
                     event_type="AUTH_BRUTE_FORCE_LIMIT_REACHED",
                     severity="CRITICAL",
                     details={"ip": client_ip, "limit": settings.AUTH_BRUTE_FORCE_LIMIT},
-                    trace_id=trace_id
+                    trace_id=trace_id,
                 )
         except Exception as re:
             logger.error(f"⚠️ Could not update Brute Force counter: {re} | Trace: {trace_id}")

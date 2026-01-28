@@ -26,13 +26,13 @@ from app.services.pii_guard import pii_guard
 from app.services.pipeline import DecisionPipeline
 from app.services.pricing_sync import get_model_pricing
 from app.services.receipt_manager import receipt_manager
-from app.services.tool_governor import governor
 
 # [NEW] Role Fabric
 from app.services.roles import role_fabric
 from app.services.safety_engine import safety_engine
 from app.services.semantic_router import semantic_router
 from app.services.tokenizer import get_token_count
+from app.services.tool_governor import governor
 from app.services.trust_system import trust_system
 
 router = APIRouter()
@@ -166,9 +166,9 @@ async def universal_proxy(
         cumulative_tokens_out = 0
         is_killed = False
         kill_reason = ""
-        
+
         # Buffer de Agentic Governance (Tool Calls)
-        tool_call_buffer = {} # call_id -> {name, args_buffer}
+        tool_call_buffer = {}  # call_id -> {name, args_buffer}
         governed_tool_count = 0
 
         # 0. EL HANDSHAKE (2026 Standard)
@@ -177,7 +177,7 @@ async def universal_proxy(
             "trace_id": trace_id,
             "status": "SECURE",
             "residency": os.getenv("SERVER_REGION", "EU-WEST-CONT"),
-            "active_guards": ["PII", "Trust", "Arbitrage", "Carbon", "Safety-Stream", "Agent-Gov"]
+            "active_guards": ["PII", "Trust", "Arbitrage", "Carbon", "Safety-Stream", "Agent-Gov"],
         }
         yield f"data: {json.dumps(handshake)}\n\n"
 
@@ -192,11 +192,15 @@ async def universal_proxy(
                 if hasattr(delta, "tool_calls") and delta.tool_calls:
                     for tc in delta.tool_calls:
                         idx = tc.index
-                        if tc.id: # Inicio de llamada
-                            tool_call_buffer[idx] = {"id": tc.id, "name": tc.function.name, "args": ""}
-                        if tc.function and tc.function.arguments: # Acumulación de args
+                        if tc.id:  # Inicio de llamada
+                            tool_call_buffer[idx] = {
+                                "id": tc.id,
+                                "name": tc.function.name,
+                                "args": "",
+                            }
+                        if tc.function and tc.function.arguments:  # Acumulación de args
                             tool_call_buffer[idx]["args"] += tc.function.arguments
-            
+
             # Nota: Si el LLM termina una llamada a herramienta, el finish_reason suele ser 'tool_calls'.
             # En ese momento (o en el chunk final), evaluamos.
             is_tool_completion = False
@@ -210,12 +214,12 @@ async def universal_proxy(
                     # Transformamos a formato estándar para el Governor
                     standard_call = {
                         "id": t_call["id"],
-                        "function": {"name": t_call["name"], "arguments": t_call["args"]}
+                        "function": {"name": t_call["name"], "arguments": t_call["args"]},
                     }
-                    
+
                     # Llamada al Gobernador
                     sanitized = await governor.inspect_tool_calls(identity, [standard_call])
-                    
+
                     # Si el gobernador ha 'intervenido', el nombre de la función habrá cambiado a system_notification
                     if sanitized[0]["function"]["name"] == "system_notification":
                         governed_tool_count += 1
@@ -225,14 +229,18 @@ async def universal_proxy(
                             "object": "chat.completion.chunk",
                             "created": int(time.time()),
                             "model": pricing["model"],
-                            "choices": [{
-                                "index": idx,
-                                "delta": {"content": f"\n🛡️ **AgentShield Gov:** Acción '{t_call['name']}' interceptada."},
-                                "finish_reason": None
-                            }]
+                            "choices": [
+                                {
+                                    "index": idx,
+                                    "delta": {
+                                        "content": f"\n🛡️ **AgentShield Gov:** Acción '{t_call['name']}' interceptada."
+                                    },
+                                    "finish_reason": None,
+                                }
+                            ],
                         }
                         yield f"data: {json.dumps(system_chunk)}\n\n"
-                        
+
                         # SIEM ALERT: Agent Action Governed
                         background_tasks.add_task(
                             event_bus.publish,
@@ -241,7 +249,7 @@ async def universal_proxy(
                             severity="WARNING",
                             details={"tool": t_call["name"], "action": "INTERCEPTED"},
                             actor_id=ctx.user_id,
-                            trace_id=ctx.trace_id
+                            trace_id=ctx.trace_id,
                         )
 
             # --- SEGURIDAD DE SALIDA (Content Selection) ---
@@ -293,7 +301,7 @@ async def universal_proxy(
         # B. MANEJO DE CIERRE FORZADO
         if is_killed:
             logger.error(f"❌ Session Terminated mid-stream: {kill_reason}")
-            
+
             # SIEM ALERT (Critical)
             background_tasks.add_task(
                 event_bus.publish,
@@ -302,7 +310,7 @@ async def universal_proxy(
                 severity="CRITICAL",
                 details={"reason": kill_reason, "stream_progress": len(output_text)},
                 actor_id=ctx.user_id,
-                trace_id=ctx.trace_id
+                trace_id=ctx.trace_id,
             )
 
             kill_chunk = {
@@ -362,7 +370,9 @@ async def universal_proxy(
         # D. Generamos la HUD Card (Elite 2026 Cockpit)
         protection_status = "✅ Protegido" if metrics.trust_score > 70 else "🛡️ Vigilancia"
         risk_score = 100 - metrics.trust_score
-        privacy_shield = "🟢 ACTIVO" if metrics.pii_redactions > 0 or not is_killed else "🟡 SCANNING"
+        privacy_shield = (
+            "🟢 ACTIVO" if metrics.pii_redactions > 0 or not is_killed else "🟡 SCANNING"
+        )
         agent_gov = "🔒 GOVERNED" if governed_tool_count > 0 else "👀 MONITORING"
         residency = os.getenv("SERVER_REGION", "EU-WEST")
 

@@ -142,7 +142,7 @@ class ReceiptManager:
                 "intent": metadata.get("intent"),
                 "risk_mode": metadata.get("risk_mode"),
                 "dept_id": metadata.get("dept_id"),
-                "trace_id": request_data.get("trace_id")
+                "trace_id": request_data.get("trace_id"),
             },
         )
 

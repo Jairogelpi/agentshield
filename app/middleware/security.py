@@ -16,7 +16,7 @@ async def security_guard_middleware(request: Request, call_next):
     # 0. TELEMETRÍA INICIAL (The Zenith Anchor)
     # Marcamos el inicio exacto para medir latencias en el HUD/Dashboard
     request.state.start_ts = time.time()
-    
+
     # Bypass para Health Check y modo Desarrollo
     is_dev = settings.ENVIRONMENT == "development"
     if request.url.path == "/health" or request.method == "OPTIONS" or is_dev:
@@ -34,14 +34,14 @@ async def security_guard_middleware(request: Request, call_next):
     if expected_secret and incoming_secret != expected_secret:
         real_ip = request.headers.get("cf-connecting-ip", request.client.host)
         logger.warning(f"⛔ Unauthorized Direct Access [{request_id}] from {real_ip}")
-        
+
         return JSONResponse(
             status_code=403,
             content={
                 "error": "Security Breach detected",
                 "message": "Direct access forbidden. Use the authorized portal.",
-                "trace_id": request_id
-            }
+                "trace_id": request_id,
+            },
         )
 
     # 3. PROCESAR PETICIÓN (El Túnel)
