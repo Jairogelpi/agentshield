@@ -49,7 +49,6 @@ async def sync_universal_prices():
                     "price_out": p_out,
                     "is_active": True,
                     "updated_at": "now()",
-                    "source": "litellm_internal",
                 }
             except Exception:
                 continue
@@ -74,7 +73,6 @@ async def sync_universal_prices():
                             "price_out": float(pricing.get("completion", 0)),
                             "is_active": True,
                             "updated_at": "now()",
-                            "source": "openrouter_api",
                         }
     except Exception as e:
         logger.warning(f"⚠️ OpenRouter sync skipped: {e}")
