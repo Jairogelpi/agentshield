@@ -24,6 +24,8 @@ from app.services.llm_gateway import execute_with_resilience
 from app.services.pii_guard import pii_guard
 from app.services.pipeline import DecisionPipeline
 from app.services.pricing_sync import get_model_pricing
+from app.services.safety_engine import safety_engine
+from app.services.limiter import check_hierarchical_budget, charge_hierarchical_wallets
 from app.services.receipt_manager import receipt_manager
 
 # [NEW] Role Fabric
@@ -156,22 +158,27 @@ async def universal_proxy(
     # Conteo de tokens real
     input_tokens_real = get_token_count(user_prompt, ctx.effective_model)
 
-    async def stream_with_hud_protocol(upstream, trace_id, start_ts, context, pricing, tokens_in):
+    async def stream_with_hud_protocol(upstream, trace_id, start_ts, context, pricing, tokens_in, identity):
         output_text = ""
-        
+        cumulative_tokens_out = 0
+        is_killed = False
+        kill_reason = ""
+
         # 0. EL HANDSHAKE (2026 Standard)
-        # Notificamos al frontend que el túnel está blindado antes de pedir nada a la IA
         handshake = {
             "object": "agentshield.handshake",
             "trace_id": trace_id,
             "status": "SECURE",
-            "residency": os.getenv("SERVER_REGION", "EU-WEST-CONT"), # Soberanía de Datos 2026
-            "active_guards": ["PII", "Trust", "Arbitrage", "Carbon"]
+            "residencie": os.getenv("SERVER_REGION", "EU-WEST-CONT"),
+            "active_guards": ["PII", "Trust", "Arbitrage", "Carbon", "Safety-Stream"]
         }
         yield f"data: {json.dumps(handshake)}\n\n"
 
-        # A. Relay del Stream original
+        # A. Relay del Stream original con Procesamiento Activo
         async for chunk in upstream:
+            if is_killed:
+                break
+
             content = None
             if hasattr(chunk, "choices") and len(chunk.choices) > 0:
                 delta = chunk.choices[0].delta
@@ -181,17 +188,56 @@ async def universal_proxy(
                 content = chunk.get("choices", [{}])[0].get("delta", {}).get("content")
 
             if content:
-                output_text += content
-                chunk_dict = chunk.model_dump() if hasattr(chunk, "model_dump") else chunk
-                yield f"data: {json.dumps(chunk_dict)}\n\n"
-            else:
-                chunk_dict = chunk.model_dump() if hasattr(chunk, "model_dump") else chunk
+                # 1. SEGURIDAD DE SALIDA (Safety Guard)
+                # Escaneamos el chunk antes de entregarlo
+                is_threat, reason, safe_content = safety_engine.scan_chunk(content)
+                
+                if is_threat:
+                    is_killed = True
+                    kill_reason = f"SECURITY_ALERT: {reason}"
+                    break # Detener stream inmediatamente
+                
+                # 2. SEGUIMIENTO DE TOKENS Y PRESUPUESTO
+                cumulative_tokens_out += get_token_count(safe_content, pricing["model"])
+                
+                # Cada 50 tokens o al final, verificamos solvencia mid-stream
+                if cumulative_tokens_out % 50 == 0:
+                    current_cost = (tokens_in * pricing["effective"]["price_in"]) + (cumulative_tokens_out * pricing["effective"]["price_out"])
+                    # Verificamos si aún tiene presupuesto para continuar
+                    allowed, fail_reason = await check_hierarchical_budget(identity, current_cost)
+                    if not allowed:
+                        is_killed = True
+                        kill_reason = f"BUDGET_EXCEEDED: {fail_reason}"
+                        break
+
+                output_text += safe_content
+                
+                # Re-empaquetamos el chunk con el contenido seguro (posiblemente redactado)
+                if isinstance(chunk, dict):
+                    chunk["choices"][0]["delta"]["content"] = safe_content
+                    chunk_dict = chunk
+                else:
+                    chunk_dict = chunk.model_dump()
+                    chunk_dict["choices"][0]["delta"]["content"] = safe_content
+                
                 yield f"data: {json.dumps(chunk_dict)}\n\n"
 
-        # B. Cálculos al Finalizar Stream (Perfection Level)
+        # B. MANEJO DE CIERRE FORZADO
+        if is_killed:
+            logger.error(f"❌ Session Terminated mid-stream: {kill_reason}")
+            kill_chunk = {
+                "object": "agentshield.kill_signal",
+                "reason": kill_reason,
+                "trace_id": trace_id,
+                "content": f"\n\n🚨 **CONEXIÓN CERRADA POR SEGURIDAD:** {kill_reason}"
+            }
+            yield f"data: {json.dumps(kill_chunk)}\n\n"
+            # No enviamos el HUD normal si fue matado por seguridad, o lo enviamos con advertencia
+        
+        # C. Cálculos al Finalizar (Normal o por Kill)
         end_time = time.time()
         latency = int((end_time - start_ts) * 1000)
-        output_tokens_final = get_token_count(output_text, pricing["model"])
+        output_tokens_final = cumulative_tokens_out
 
         # Calculos Financieros Reales (Arbitraje Expuesto)
         p_eff = pricing["effective"]
@@ -233,19 +279,16 @@ async def universal_proxy(
             active_rules=context["active_rules"],
         )
 
-        # D. Generamos la HUD Card (2026 'Cyber-Financial' Aesthetic)
+        # D. Generamos la HUD Card (Elite 2026 Cockpit)
         protection_status = "✅ Protegido" if metrics.trust_score > 70 else "🛡️ Vigilancia"
-        hive_tag = " | 🐝 **Hive Mind**" if context.get("hive_hit") else ""
-<<<<<<< HEAD
-        residency = os.getenv("SERVER_REGION", "EU")
+        risk_score = 100 - metrics.trust_score
+        privacy_shield = "🟢 ACTIVO" if metrics.pii_redactions > 0 or not is_killed else "🟡 SCANNING"
+        residency = os.getenv("SERVER_REGION", "EU-WEST")
         
-=======
-
->>>>>>> 9ad3d2cca1b880bdf19063ca45640e553a798348
         hud_md = (
             f"\n\n---\n"
-            f"**🛡️ AgentShield Status:** {protection_status} | **Soberanía:** `{residency}` | **Role:** `{context['role_name']}`\n"
-            f"**💰 Ahorro Real:** `${metrics.savings_usd:.4f}` | **⚡ Latencia:** `{metrics.latency_ms}ms`{hive_tag}\n"
+            f"**🛡️ AgentShield Status:** {protection_status} | **Soberanía:** `{residency}` | **Riesgo:** `{risk_score}/100`\n"
+            f"**💰 Ahorro Real:** `${metrics.savings_usd:.4f}` | **⚡ Latencia:** `{metrics.latency_ms}ms` | **Privacidad:** `{privacy_shield}`\n"
             f"**🌱 Impacto:** `-{metrics.co2_saved_grams:.2f}g CO2e` | **PII Redacted:** `{metrics.pii_redactions}`"
         )
 
@@ -302,7 +345,7 @@ async def universal_proxy(
 
     return StreamingResponse(
         stream_with_hud_protocol(
-            upstream_gen, ctx.trace_id, start_time, user_context, pricing_context, input_tokens_real
+            upstream_gen, ctx.trace_id, start_time, user_context, pricing_context, input_tokens_real, identity
         ),
         media_type="text/event-stream",
     )
