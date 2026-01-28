@@ -31,6 +31,14 @@ No solo validamos llaves, vigilamos el comportamiento. Usamos **Redis** para rec
 Este es el secreto de la velocidad de AgentShield. Una vez que el middleware confirma quién eres, te pone un "sello invisible" en la petición.
 *   **Por qué es mejor:** Normalmente, cada vez que una petición pasa por diferentes capas (pagos, auditoría, IA), el sistema tiene que volver a preguntar: "¿Quién es este?". Aquí, el middleware lo resuelve una vez y lo "inyecta" en `request.state.tenant_id`. Todo el resto de la aplicación es **mucho más rápida** porque ya confía en el veredicto del middleware.
 
+### 4. Resiliencia Total (Graceful Degradation)
+El sistema está diseñado para no rendirse. Si la infraestructura de soporte (como Redis) tiene un parpadeo, AgentShield no se detiene.
+*   **Por qué es mejor:** El middleware está envuelto en protecciones que permiten que, si el sistema de "fuerza bruta" falla, el usuario legítimo pueda seguir trabajando. Priorizamos la **Disponibilidad** sin sacrificar la seguridad de fondo.
+
+### 5. Observabilidad Forense (Distributed Tracing)
+Convertimos cada petición en un hilo rastreable. Inyectamos un `trace_id` único desde el primer milisegundo.
+*   **Por qué es mejor:** Si hay un error, el sistema te da un `X-Request-ID`. Con ese código, puedes rastrear exactamente qué pasó en los logs, desde la seguridad hasta la respuesta final de la IA. Es **transparencia absoluta**.
+
 ---
 
 ## 📄 El Código de Elite (`app/middleware/auth.py`)
@@ -54,35 +62,40 @@ async def global_security_guard(request: Request):
     if request.method == "OPTIONS":
         return
 
-    # --- NIVEL 2: EL ESCUDO ANTI-ATAQUE ---
+    # --- NIVEL 2: EL ESCUDO ANTI-ATAQUE CON RESILIENCIA ---
     client_ip = get_real_ip_address(request)
     block_key = f"auth_block:{client_ip}"
     
-    if await redis_client.get(block_key):
-        logger.warning(f"🛑 Acceso denegado a {client_ip} (Bloqueo preventivo)")
-        raise HTTPException(429, "Demasiados intentos. Por favor, espera unos minutos.")
+    try:
+        if await redis_client.get(block_key):
+            logger.warning(f"🛑 Acceso denegado a {client_ip} (Bloqueo preventivo)")
+            raise HTTPException(429, "Demasiados intentos. Por favor, espera unos minutos.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"⚠️ Resilience: Redis down, skipping brute force check: {e}")
 
     # --- NIVEL 3: VALIDACIÓN E INYECCIÓN DE ALTA VELOCIDAD ---
     try:
         tenant_id = await verify_api_key(request.headers.get("Authorization"))
-        
-        # Inyectamos el ID para eliminar redundancia en los routers
         request.state.tenant_id = tenant_id
         
-        # Limpieza de historial para usuarios legítimos
-        await redis_client.delete(f"auth_fail:{client_ip}")
+        try:
+            await redis_client.delete(f"auth_fail:{client_ip}")
+        except:
+            pass
         
     except HTTPException as e:
-        # Lógica de detección de intrusos
+        # Registro inteligente de fallos
         fail_key = f"auth_fail:{client_ip}"
-        fails = await redis_client.incr(fail_key)
-        
-        if fails == 1:
-            await redis_client.expire(fail_key, settings.AUTH_BRUTE_FORCE_WINDOW)
-            
-        if fails >= settings.AUTH_BRUTE_FORCE_LIMIT:
-            await redis_client.setex(block_key, settings.AUTH_BRUTE_FORCE_WINDOW, "blocked")
-            logger.error(f"🚨 IP bloqueada: {client_ip} (Límite de fallos alcanzado)")
+        try:
+            fails = await redis_client.incr(fail_key)
+            if fails == 1:
+                await redis_client.expire(fail_key, settings.AUTH_BRUTE_FORCE_WINDOW)
+            if fails >= settings.AUTH_BRUTE_FORCE_LIMIT:
+                await redis_client.setex(block_key, settings.AUTH_BRUTE_FORCE_WINDOW, "blocked")
+        except:
+            pass
             
         raise e
 ```
