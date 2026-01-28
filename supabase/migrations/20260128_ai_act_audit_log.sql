@@ -54,7 +54,8 @@ CREATE INDEX idx_ai_act_audit_tenant ON ai_act_audit_log(tenant_id);
 CREATE INDEX idx_ai_act_audit_trace ON ai_act_audit_log(trace_id);
 CREATE INDEX idx_ai_act_audit_risk_level ON ai_act_audit_log(risk_level);
 CREATE INDEX idx_ai_act_audit_created ON ai_act_audit_log(created_at DESC);
-CREATE INDEX idx_ai_act_audit_retention ON ai_act_audit_log(retention_until) WHERE retention_until > NOW();
+-- Note: retention_until index without WHERE clause (NOW() is not immutable in predicates)
+CREATE INDEX idx_ai_act_audit_retention ON ai_act_audit_log(retention_until);
 
 -- Composite index for Article 12 compliance reports
 CREATE INDEX idx_ai_act_audit_compliance_report ON ai_act_audit_log(
