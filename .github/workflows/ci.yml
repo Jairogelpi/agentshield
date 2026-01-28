@@ -54,11 +54,11 @@ jobs:
       - name: Auto-Fix & Format
         if: needs.changes.outputs.python == 'true' || needs.changes.outputs.rust == 'true'
         run: |
-          uv pip install ruff
+          uv pip install --system ruff
           # Run check with fix, allow failure initially to maximize fixes
-          uv run ruff check --fix . || true
+          ruff check --fix . || true
           # Run formatter
-          uv run ruff format .
+          ruff format .
       
       - name: Commit changes
         if: needs.changes.outputs.python == 'true' || needs.changes.outputs.rust == 'true'
@@ -71,7 +71,7 @@ jobs:
         if: needs.changes.outputs.python == 'true' || needs.changes.outputs.sql == 'true'
         run: |
           if [ "${{ needs.changes.outputs.python }}" == "true" ]; then
-            uv pip install pip-audit && uv run pip-audit -r requirements.txt --ignore-vuln GHSA-p46v-3cf4-92rq || true
+            uv pip install --system pip-audit && pip-audit -r requirements.txt --ignore-vuln GHSA-p46v-3cf4-92rq || true
           fi
           if [ "${{ needs.changes.outputs.sql }}" == "true" ]; then
             python scripts/validate_schemas.py
@@ -94,12 +94,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Build & Test
         run: |
-          uv pip install maturin pytest pytest-cov pytest-asyncio httpx -r requirements.txt
+          uv pip install --system maturin pytest pytest-cov pytest-asyncio httpx -r requirements.txt
           # Instalar el módulo Rust en el MISMO entorno virtual (editable mode)
-          uv pip install -e rust_module/
+          uv pip install --system -e rust_module/
           
           # Ejecutar tests
-          uv run pytest tests/ -v --cov=app --cov-report=xml
+          pytest tests/ -v --cov=app --cov-report=xml
         env:
           PYTHONPATH: ${{ github.workspace }}
           # Asegurar que maturin use abi3 si es necesario (opcional, pero buena práctica)
@@ -173,9 +173,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Matrix Tests
         run: |
-          uv pip install maturin pytest pytest-asyncio httpx -r requirements.txt
-          uv pip install -e rust_module/
-          uv run pytest tests/ -v
+          uv pip install --system maturin pytest pytest-asyncio httpx -r requirements.txt
+          uv pip install --system -e rust_module/
+          pytest tests/ -v
 
   # ─────────────────────────────────────────────
   # JOB 6: SMOKE TEST (Background)
@@ -196,10 +196,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Smoke
         run: |
-          uv venv
-          uv pip install maturin granian -r requirements.txt
-          uv pip install -e rust_module/
-          uv run python -m granian --interface asgi app.main:app --host 0.0.0.0 --port 8000 &
+          uv pip install --system maturin granian -r requirements.txt
+          uv pip install --system -e rust_module/
+          python -m granian --interface asgi app.main:app --host 0.0.0.0 --port 8000 &
           sleep 10
           curl -f http://localhost:8000/health
         env:
