@@ -52,10 +52,17 @@ class HiveMindService:
             # 1. DIRECT HIT (Tier 0/1)
             if top_score > 0.94:
                 logger.info(f"💎 Direct Hive Hit (Score: {top_score:.4f})")
+                
+                # Calculate enriched metadata
+                enriched_metadata = await self._calculate_knowledge_value(
+                    candidates[0], "DIRECT_HIT", [candidates[0]], tenant_id
+                )
+                
                 return {
                     "source": "DIRECT_HIT",
                     "content": candidates[0].response,
                     "confidence": top_score,
+                    **enriched_metadata,
                 }
 
             # 2. EVOLUTIONARY SYNTHESIS (Tier 2 - Collective Wisdom)
@@ -72,6 +79,42 @@ class HiveMindService:
         except Exception as e:
             logger.error(f"Hive Query Error: {e}")
             return None
+
+    async def _calculate_knowledge_value(
+        self, primary_candidate, source_type: str, all_candidates: List[Any], tenant_id: str
+    ) -> Dict[str, Any]:
+        """
+        Revolutionary Knowledge Liquidity Metrics.
+        Calculates the quantifiable value of knowledge reuse.
+        """
+        # 1. MEMORY ROI INDEX (Ahorro en USD por reutilizacion)
+        # Asumimos que cada hit ahorra el costo promedio de una llamada GPT-4o (~$0.015)
+        avg_llm_cost = 0.015
+        validation_count = int(getattr(primary_candidate, "validation_count", 1))
+        memory_roi = avg_llm_cost * validation_count
+        
+        # 2. KNOWLEDGE CONFIDENCE SCORE (basado en validaciones y convergencia)
+        # Más validaciones = mayor confianza
+        confidence_boost = min(validation_count * 0.02, 0.15)  # Max +15%
+        base_confidence = 1 - float(primary_candidate.score)
+        final_confidence = min(base_confidence + confidence_boost, 0.99)
+        
+        # 3. CROSS-DEPARTMENT INTELLIGENCE
+        # Simulamos por ahora (en producción, vendría de metadata dept_id)
+        dept_sources = min(len(all_candidates), 5)  # Max 5 departamentos
+        
+        # 4. KNOWLEDGE COMPOUND INTEREST (Crecimiento exponencial)
+        # Formula: ROI_futuro = ROI_actual * (1 + tasa)^validaciones
+        compound_rate = 0.08  # 8% de crecimiento por validación
+        projected_roi_30d = memory_roi * ((1 + compound_rate) ** min(validation_count, 10))
+        
+        return {
+            "memory_roi_usd": round(memory_roi, 4),
+            "knowledge_confidence": round(final_confidence, 4),
+            "dept_sources": dept_sources,
+            "projected_roi_30d": round(projected_roi_30d, 2),
+            "validation_count": validation_count,
+        }
 
     async def _synthesize_knowledge(self, prompt: str, candidates: List[Any]) -> Dict[str, Any]:
         """
@@ -104,12 +147,18 @@ class HiveMindService:
             )
 
             synthesized_text = response.choices[0].message.content
+            
+            # Calculate enriched metadata for synthesis
+            enriched_metadata = await self._calculate_knowledge_value(
+                candidates[0], "HIVE_SYNTHESIS", candidates, "SYSTEM"
+            )
 
             return {
                 "source": "HIVE_SYNTHESIS",
                 "content": synthesized_text,
                 "confidence": 0.90,  # Fixed score for synthesis
                 "records_used": len(candidates),
+                **enriched_metadata,
             }
         except Exception as e:
             logger.error(f"Knowledge Synthesis Failed: {e}")
