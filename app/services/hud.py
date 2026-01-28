@@ -4,8 +4,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-
 from pydantic import BaseModel, Field
+
 
 class HudMetrics(BaseModel):
     request_id: str
@@ -21,7 +21,7 @@ class HudMetrics(BaseModel):
     pii_redactions: int
     intent: str
     role: str | None = None
-    active_rules: list | None = Field(default_factory=list) # [NEW] List of strings
+    active_rules: list | None = Field(default_factory=list)  # [NEW] List of strings
 
 
 def _get_risk_badge(score: int) -> str:
