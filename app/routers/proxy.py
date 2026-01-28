@@ -1,6 +1,7 @@
 # app/routers/proxy.py
 import json
 import logging
+import os
 import time
 import uuid
 
@@ -13,6 +14,9 @@ from app.services.cache import get_semantic_cache, set_semantic_cache  # [NEW] C
 from app.services.carbon import carbon_governor
 from app.services.event_bus import event_bus
 from app.services.hud import HudMetrics, build_structured_event
+from opentelemetry import trace
+
+tracer = trace.get_tracer(__name__)
 
 # Servicios del Decision Graph
 from app.services.identity import VerifiedIdentity, verify_identity_envelope
@@ -41,7 +45,11 @@ async def universal_proxy(
     """
     El Corazón del AgentShield OS - Ahora con Live HUD Streaming.
     """
-    start_time = time.time()
+    with tracer.start_as_current_span("universal_proxy") as span:
+        span.set_attribute("tenant.id", str(identity.tenant_id))
+        span.set_attribute("user.id", identity.user_id)
+        
+        start_time = time.time()
 
     # 0. INIT REQUEST
     try:
@@ -78,6 +86,17 @@ async def universal_proxy(
     if cached_response:
         hive_hit = True
         ctx.log("CACHE", "🐝 Hive Hit! Serving from memory.")
+        
+        # SIEM SIGNAL
+        background_tasks.add_task(
+            event_bus.publish,
+            tenant_id=ctx.tenant_id,
+            event_type="HIVE_CACHE_HIT",
+            severity="INFO",
+            details={"prompt_hash": hash(user_prompt), "savings_estimate": 0.05},
+            actor_id=ctx.user_id,
+            trace_id=ctx.trace_id
+        )
 
         # Simulamos un generador compatible con el protocolo
         async def mock_upstream_gen():
@@ -239,6 +258,23 @@ async def universal_proxy(
         yield "data: [DONE]\n\n"
 
         # E. Persistencia Asíncrona vía BackgroundTasks (Production Best Practice)
+        # SIEM: Final Transaction Report
+        background_tasks.add_task(
+            event_bus.publish,
+            tenant_id=ctx.tenant_id,
+            event_type="AI_PROXY_FULFILLMENT",
+            severity="INFO",
+            details={
+                "model_req": pricing["requested_model"],
+                "model_eff": pricing["model"],
+                "savings": metrics.savings_usd,
+                "pii_filtered": metrics.pii_redactions > 0,
+                "hive_hit": context.get("hive_hit")
+            },
+            actor_id=ctx.user_id,
+            trace_id=ctx.trace_id
+        )
+
         background_tasks.add_task(
             receipt_manager.create_and_sign_receipt,
             tenant_id=ctx.tenant_id,
