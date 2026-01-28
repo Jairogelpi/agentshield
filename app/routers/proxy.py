@@ -26,6 +26,7 @@ from app.services.pii_guard import pii_guard
 from app.services.pipeline import DecisionPipeline
 from app.services.pricing_sync import get_model_pricing
 from app.services.receipt_manager import receipt_manager
+from app.services.tool_governor import governor
 
 # [NEW] Role Fabric
 from app.services.roles import role_fabric
@@ -165,14 +166,18 @@ async def universal_proxy(
         cumulative_tokens_out = 0
         is_killed = False
         kill_reason = ""
+        
+        # Buffer de Agentic Governance (Tool Calls)
+        tool_call_buffer = {} # call_id -> {name, args_buffer}
+        governed_tool_count = 0
 
         # 0. EL HANDSHAKE (2026 Standard)
         handshake = {
             "object": "agentshield.handshake",
             "trace_id": trace_id,
             "status": "SECURE",
-            "residencie": os.getenv("SERVER_REGION", "EU-WEST-CONT"),
-            "active_guards": ["PII", "Trust", "Arbitrage", "Carbon", "Safety-Stream"],
+            "residency": os.getenv("SERVER_REGION", "EU-WEST-CONT"),
+            "active_guards": ["PII", "Trust", "Arbitrage", "Carbon", "Safety-Stream", "Agent-Gov"]
         }
         yield f"data: {json.dumps(handshake)}\n\n"
 
@@ -181,6 +186,65 @@ async def universal_proxy(
             if is_killed:
                 break
 
+            # --- GOBERNANZA DE AGENTES (Tool Detection) ---
+            if hasattr(chunk, "choices") and len(chunk.choices) > 0:
+                delta = chunk.choices[0].delta
+                if hasattr(delta, "tool_calls") and delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        if tc.id: # Inicio de llamada
+                            tool_call_buffer[idx] = {"id": tc.id, "name": tc.function.name, "args": ""}
+                        if tc.function and tc.function.arguments: # Acumulación de args
+                            tool_call_buffer[idx]["args"] += tc.function.arguments
+            
+            # Nota: Si el LLM termina una llamada a herramienta, el finish_reason suele ser 'tool_calls'.
+            # En ese momento (o en el chunk final), evaluamos.
+            is_tool_completion = False
+            if hasattr(chunk, "choices") and len(chunk.choices) > 0:
+                if chunk.choices[0].finish_reason == "tool_calls":
+                    is_tool_completion = True
+
+            if is_tool_completion:
+                # EVALUACIÓN DE AGENTIC GOVERNANCE
+                for idx, t_call in tool_call_buffer.items():
+                    # Transformamos a formato estándar para el Governor
+                    standard_call = {
+                        "id": t_call["id"],
+                        "function": {"name": t_call["name"], "arguments": t_call["args"]}
+                    }
+                    
+                    # Llamada al Gobernador
+                    sanitized = await governor.inspect_tool_calls(identity, [standard_call])
+                    
+                    # Si el gobernador ha 'intervenido', el nombre de la función habrá cambiado a system_notification
+                    if sanitized[0]["function"]["name"] == "system_notification":
+                        governed_tool_count += 1
+                        # Emitimos el chunk de sistema para alertar al frontend/usuario
+                        system_chunk = {
+                            "id": f"gov-{trace_id}-{idx}",
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": pricing["model"],
+                            "choices": [{
+                                "index": idx,
+                                "delta": {"content": f"\n🛡️ **AgentShield Gov:** Acción '{t_call['name']}' interceptada."},
+                                "finish_reason": None
+                            }]
+                        }
+                        yield f"data: {json.dumps(system_chunk)}\n\n"
+                        
+                        # SIEM ALERT: Agent Action Governed
+                        background_tasks.add_task(
+                            event_bus.publish,
+                            tenant_id=ctx.tenant_id,
+                            event_type="AGENT_ACTION_GOVERNED",
+                            severity="WARNING",
+                            details={"tool": t_call["name"], "action": "INTERCEPTED"},
+                            actor_id=ctx.user_id,
+                            trace_id=ctx.trace_id
+                        )
+
+            # --- SEGURIDAD DE SALIDA (Content Selection) ---
             content = None
             if hasattr(chunk, "choices") and len(chunk.choices) > 0:
                 delta = chunk.choices[0].delta
@@ -298,15 +362,14 @@ async def universal_proxy(
         # D. Generamos la HUD Card (Elite 2026 Cockpit)
         protection_status = "✅ Protegido" if metrics.trust_score > 70 else "🛡️ Vigilancia"
         risk_score = 100 - metrics.trust_score
-        privacy_shield = (
-            "🟢 ACTIVO" if metrics.pii_redactions > 0 or not is_killed else "🟡 SCANNING"
-        )
+        privacy_shield = "🟢 ACTIVO" if metrics.pii_redactions > 0 or not is_killed else "🟡 SCANNING"
+        agent_gov = "🔒 GOVERNED" if governed_tool_count > 0 else "👀 MONITORING"
         residency = os.getenv("SERVER_REGION", "EU-WEST")
 
         hud_md = (
             f"\n\n---\n"
-            f"**🛡️ AgentShield Status:** {protection_status} | **Soberanía:** `{residency}` | **Riesgo:** `{risk_score}/100`\n"
-            f"**💰 Ahorro Real:** `${metrics.savings_usd:.4f}` | **⚡ Latencia:** `{metrics.latency_ms}ms` | **Privacidad:** `{privacy_shield}`\n"
+            f"**🛡️ AgentShield Status:** {protection_status} | **Agents:** `{agent_gov}` | **Riesgo:** `{risk_score}/100`\n"
+            f"**💰 Ahorro Real:** `${metrics.savings_usd:.4f}` | **⚡ Latencia:** `{metrics.latency_ms}ms` | **Soberanía:** `{residency}`\n"
             f"**🌱 Impacto:** `-{metrics.co2_saved_grams:.2f}g CO2e` | **PII Redacted:** `{metrics.pii_redactions}`"
         )
 
