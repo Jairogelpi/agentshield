@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from fpdf import FPDF
 
 import app.services.crypto_signer as crypto_signer  # Reutilizamos tu motor de firma RSA
+from app.config import settings
 from app.db import supabase
 
 logger = logging.getLogger("agentshield.compliance")
@@ -119,8 +120,9 @@ class ComplianceOfficer:
         pdf.set_text_color(100, 100, 100)
         pdf.multi_cell(0, 10, txt=f"Official Signature:\n{signature}")
 
-        # (Mock URL - En prod subirías el PDF a Supabase Storage)
-        mock_url = f"https://api.agentshield.com/v1/compliance/certs/{uuid.uuid4()}.pdf"
+        # Subir PDF a Supabase Storage (Pendiente: Implementar storage worker)
+        # Por ahora generamos la URL pública basada en BASE_URL
+        cert_url = f"{settings.BASE_URL}/v1/compliance/certs/{uuid.uuid4()}.pdf"
 
         # Guardar en Ledger de Certificados
         cert_hash = hashlib.sha256(str(data).encode()).hexdigest()
@@ -128,14 +130,14 @@ class ComplianceOfficer:
             {
                 "tenant_id": tenant_id,
                 "certificate_hash": cert_hash,
-                "storage_path": mock_url,
+                "storage_path": cert_url,
                 "valid_until": (datetime.now() + timedelta(days=90)).isoformat()
                 if cert_type == "SYSTEM_AUDIT"
                 else None,
             }
         ).execute()
 
-        return {"url": mock_url, "hash": cert_hash}
+        return {"url": cert_url, "hash": cert_hash}
 
 
 compliance_officer = ComplianceOfficer()

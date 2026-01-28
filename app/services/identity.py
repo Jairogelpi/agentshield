@@ -59,10 +59,11 @@ async def verify_identity_envelope(authorization: str = Header(...)) -> Verified
                 raise HTTPException(503, "Identity Service Timeout")
 
             if not res.data:
-                # Fallback: Usar metadata del token + Tenant Default
+                # Fallback: Usar metadata del token
                 tenant_id = app_metadata.get("tenant_id")
                 if not tenant_id:
-                    tenant_id = "default_tenant"
+                    logger.error(f"❌ Identity Error: No Tenant ID found for user {user_id}")
+                    raise HTTPException(403, "Identity Verification Failed: No Tenant Association")
 
                 # Buscamos el departamento por defecto
                 try:
@@ -73,13 +74,15 @@ async def verify_identity_envelope(authorization: str = Header(...)) -> Verified
                 except asyncio.TimeoutError:
                     dept_res = None
                 
-                dept_id = dept_res.data[0]["id"] if dept_res and dept_res.data else "none"
+                dept_id = dept_res.data[0]["id"] if dept_res and dept_res.data else None
+                if not dept_id:
+                     logger.warning(f"⚠️ User {user_id} has no department in tenant {tenant_id}")
 
                 profile = {
                     "email": email,
                     "department_id": dept_id,
                     "tenant_id": tenant_id,
-                    "role": app_metadata.get("role", "member"),
+                    "role": app_metadata.get("role", settings.DEFAULT_ROLE),
                 }
             else:
                 profile = res.data
@@ -92,12 +95,12 @@ async def verify_identity_envelope(authorization: str = Header(...)) -> Verified
                         )
                     except asyncio.TimeoutError:
                         dept_res = None
-                    profile["department_id"] = dept_res.data[0]["id"] if dept_res and dept_res.data else "none"
+                    profile["department_id"] = dept_res.data[0]["id"] if dept_res and dept_res.data else None
 
                 if "tenant_id" not in profile:
                     profile["tenant_id"] = app_metadata.get("tenant_id")
                 if "role" not in profile:
-                    profile["role"] = app_metadata.get("role", "member")
+                    profile["role"] = app_metadata.get("role", settings.DEFAULT_ROLE)
 
             # Cachear Identidad Verificada (5 min)
             await redis_client.setex(f"identity:{user_id}", 300, json.dumps(profile))

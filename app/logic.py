@@ -151,10 +151,10 @@ async def verify_residency(tenant_id: str):
 
     if not tenant_region:
         res = supabase.table("tenants").select("region").eq("id", tenant_id).single().execute()
-        tenant_region = res.data.get("region", "eu")  # Default fallback
-        if tenant_region == "eu":
+        tenant_region = res.data.get("region", settings.DEFAULT_REGION)
+        if tenant_region == settings.DEFAULT_REGION:
             logger.warning(
-                f"Tenant {tenant_id} region not found, defaulting to 'eu'. Check DB integrity."
+                f"Tenant {tenant_id} region not found, defaulting to '{settings.DEFAULT_REGION}'. Check DB integrity."
             )
         await redis_client.set(f"region:{tenant_id}", tenant_region, ex=3600)
     else:

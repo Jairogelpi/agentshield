@@ -6,17 +6,14 @@ from app.config import settings
 logger = logging.getLogger("agentshield.security")
 
 async def security_guard_middleware(request: Request, call_next):
-    # 1. Bypass para Health Check, Desarrollo y CORS Preflight (OPTIONS)
-    real_ip = request.headers.get("cf-connecting-ip", request.client.host)
-    
-    # We use settings for environment
-    is_dev = settings.model_dump().get("ENVIRONMENT") == "development"
+    # 1. Bypass para Health Check y modo Desarrollo
+    # Determinamos si es desarrollo basándonos en el entorno configurado
+    is_dev = settings.ENVIRONMENT == "development"
     
     if (
         request.url.path == "/health"
         or request.method == "OPTIONS"
         or is_dev
-        or real_ip == "127.0.0.1"
     ):
         return await call_next(request)
 
@@ -25,9 +22,10 @@ async def security_guard_middleware(request: Request, call_next):
     incoming_secret = request.headers.get("X-AgentShield-Auth")
 
     if expected_secret and incoming_secret != expected_secret:
+        real_ip = request.headers.get("cf-connecting-ip", request.client.host)
         logger.warning(f"⛔ Direct access blocked from {real_ip}")
         return JSONResponse(
-            status_code=403, content={"error": "Direct access forbidden. Use getagentshield.com"}
+            status_code=403, content={"error": "Direct access forbidden. Use the authorized portal."}
         )
 
     # 3. PROCESAR PETICIÓN

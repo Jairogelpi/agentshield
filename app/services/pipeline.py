@@ -1,5 +1,8 @@
 import asyncio
+import uuid
+import logging
 from fastapi import HTTPException, Request
+from app.config import settings
 from app.schema import DecisionContext
 from app.services.roles import role_fabric
 from app.services.semantic_router import semantic_router
@@ -18,9 +21,9 @@ class DecisionPipeline:
         Returns (ctx, modified_messages, trust_policy, active_role, pii_result).
         """
         # 0. ROLE FABRIC
-        user_function = getattr(identity, "function", "Employee")
+        user_function = getattr(identity, "function", settings.DEFAULT_FUNCTION)
         active_role = await role_fabric.get_role(
-            dept=str(identity.dept_id or "General"), function=user_function
+            dept=str(identity.dept_id or settings.DEFAULT_DEPT), function=user_function
         )
 
         if messages and messages[0]["role"] != "system":
