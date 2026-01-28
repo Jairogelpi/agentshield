@@ -1,316 +1,87 @@
-from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Request
+import logging
+import asyncio
+import time
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, ORJSONResponse
-from slowapi import _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
 
-# Load env vars first thing (Critical for Render/Local hybrid)
-load_dotenv()
-
-import logging
-
-# Debug Env Vars (Safe Log)
-import os
-
-from app.limiter import limiter
-from app.logic import verify_api_key
-from app.routers import analytics, authorize, compliance, dashboard, onboarding, proxy, receipt
+from app.config import settings
+from app.middleware.auth import global_security_guard
+from app.middleware.security import security_guard_middleware
+from app.services.monitoring import setup_monitoring
 from app.services.cache import init_semantic_cache_index
 from app.services.market_oracle import update_market_rules
+from app.db import recover_pending_charges, redis_client, supabase
+from app.services.pricing_sync import sync_universal_prices
 
-debug_logger = logging.getLogger("startup")
-supabase_status = "✅ Found" if os.getenv("SUPABASE_URL") else "❌ MISSING"
-debug_logger.info(f"Startup Env Check: SUPABASE_URL={supabase_status}")
-
-
-# 1. Función de Guardián Global
-async def global_security_guard(request: Request):
-    # Lista blanca de endpoints backend que NO requieren auth
-    # /health: Necesario para Render/K8s
-    # /docs y /openapi.json: Para que tú veas la docu (puedes quitarlo en prod)
-    # /v1/webhook: Webhooks de terceros (ej. Stripe/Brevo) que no envían Bearer
-    # /v1/public: Public Tenant Config (White Label)
-    whitelist = [
-        "/health",
-        "/docs",
-        "/openapi.json",
-        "/v1/webhook",
-        "/v1/public/tenant-config",
-        "/v1/signup",  # Registro de nuevo Tenant
-        "/v1/onboarding/organizations",  # Listado para onboarding
-        "/v1/onboarding/invite",  # Invitaciones durante onboarding
-    ]
-
-    if request.url.path in whitelist:
-        return  # Pase usted
-
-    if request.method == "OPTIONS":
-        return  # CORS preflight pase usted
-
-    # Para todo lo demás: EXIGIR CREDENCIALES
-    # Esto lanzará 401 si no hay token válido.
-    await verify_api_key(request.headers.get("Authorization"))
-
-
-import asyncio
-import atexit
-import logging
-import os
-import queue
-from logging.handlers import QueueHandler, QueueListener
-
-import sentry_sdk
-from logtail import LogtailHandler
-from opentelemetry import trace
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-
-from app.services.safe_logger import PIIRedactionFilter  # PII Firewall
-
-# 0. Sentry Error Tracking
-sentry_dsn = os.getenv("SENTRY_DSN")
-if sentry_dsn:
-    sentry_sdk.init(dsn=sentry_dsn, traces_sample_rate=1.0)
-
-# 1. Configuración de Logs (Betterstack)
-# Solo si existe el token, para no romper en dev local sin token
-# Solo si existe el token, para no romper en dev local sin token
-logtail_token = os.getenv("LOGTAIL_TOKEN")
-
-# Global state for Readiness Probe
 # Global state for Readiness Probe
 MODELS_LOADED = False
-
-# Configurar el logger ROOT de 'agentshield'
 logger = logging.getLogger("agentshield")
-logger.setLevel(logging.INFO)
-
-if logtail_token:
-    handler = LogtailHandler(source_token=logtail_token)
-
-    # --- PII FIREWALL PARA LOGS ---
-    # Cualquier log que salga hacia Betterstack será escaneado y limpiado anónimamente.
-    pii_filter = PIIRedactionFilter()
-    handler.addFilter(pii_filter)
-    # ------------------------------
-
-    # --- NON-BLOCKING LOGGING (Queue Pattern) ---
-    # Logtail/Console I/O can be slow. We offload it to a background thread.
-    # ANTES: log_queue = queue.Queue(-1) # Infinite queue -> PELIGRO
-    # AHORA: Límite de 10,000 logs. Si se llena, evita OOM.
-    log_queue = queue.Queue(10000)
-    queue_handler = QueueHandler(log_queue)
-
-    # The listener runs in a separate thread and calls the actual expensive handlers
-    listener = QueueListener(log_queue, handler)
-    listener.start()
-    atexit.register(listener.stop)
-
-    logger.addHandler(queue_handler)
-else:
-    # Fallback: Simple Console Logger for Local Dev / CI
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
-
-
-def setup_observability(app):
-    try:
-        # Usamos nombres standard de OTEL para Grafana
-        endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-        headers_str = os.getenv("OTEL_EXPORTER_OTLP_HEADERS")
-
-        if endpoint:
-            # Parsear headers de "Key=Value,Key2=Value2" a dict
-            headers = dict(h.split("=") for h in headers_str.split(",")) if headers_str else {}
-
-            # Nombre de servicio
-            service_name = os.getenv("OTEL_SERVICE_NAME", "AgentShield-Core")
-            resource = Resource.create({"service.name": service_name})
-
-            provider = TracerProvider(resource=resource)
-
-            # Pasar los headers de Grafana directamente
-            exporter = OTLPSpanExporter(endpoint=endpoint, headers=headers)
-            processor = BatchSpanProcessor(exporter)
-
-            provider.add_span_processor(processor)
-            trace.set_tracer_provider(provider)
-
-            # Instrumentar FastAPI automáticamente
-            FastAPIInstrumentor.instrument_app(app)
-            logger.info(f"✅ Observability initialized for {service_name} -> Grafana Cloud")
-
-    except Exception as e:
-        logger.error(f"Grafana/OTEL Init Error: {e}")
-
-
-from contextlib import asynccontextmanager
-
-from app.db import recover_pending_charges
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # --- STARTUP ---
     logger.info("🚀 AgentShield Core Starting...")
-
-    # 1. Recuperación de Cobros (WAL Recovery)
-    try:
-        asyncio.create_task(recover_pending_charges())
-    except Exception as e:
-        logger.critical(f"Failed to start Recovery Worker: {e}")
-
-    # 2. Inicializar Cache Vectorial (No bloqueante)
+    
+    # 1. Recovery & Initializations
+    asyncio.create_task(recover_pending_charges())
     asyncio.create_task(init_semantic_cache_index())
-
-    # 3. Iniciar Oráculo de Mercado (Async) - Obtiene precios "frescos"
     asyncio.create_task(update_market_rules())
+    asyncio.create_task(sync_universal_prices())
 
-    # 4. WARMUP (Modelos en Memoria tras arranque exitoso)
-    # Esperamos un poco para que Granian bindee el puerto primero y pase el Health Check de Render
+    # 2. WARMUP (Models in Memory)
     async def warmup_models():
-        """Carga secuencial de modelos para evitar picos de RAM en el arranque."""
-        logger.info("⏳ Warming up local AI models (Embeddings, PII Guard, Reranker)...")
+        logger.info("⏳ Warming up local AI models...")
         try:
-            from app.services.cache import get_embedding
             from app.services.pii_guard import redact_pii_sync
             from app.services.reranker import get_reranker_model
-
-            # 1. Reranker (ONNX)
-            logger.info("  -> Loading Reranker...")
             await asyncio.to_thread(get_reranker_model)
-
-            # 2. PII Guard (Rust/ONNX)
-            logger.info("  -> Initializing PII Guard...")
-            await asyncio.to_thread(redact_pii_sync, "Warmup check")
-
-            # Embeddings no necesitan warmup manual si son llamadas a API (LiteLLM)
-            # Pero inicializamos el índice de Redis (ya lo hace init_semantic_cache_index)
-
+            await asyncio.to_thread(redact_pii_sync, "Warmup")
             global MODELS_LOADED
             MODELS_LOADED = True
-            logger.info("✅ AI Models Ready in Memory! System Fully Operational.")
+            logger.info("✅ System Fully Operational.")
         except Exception as e:
             logger.warning(f"⚠️ Warmup Partial Fail: {e}")
 
     asyncio.create_task(warmup_models())
-
     yield
-
-    # --- SHUTDOWN ---
     logger.info("🛑 AgentShield Core Shutting Down...")
-
 
 app = FastAPI(
     title="AgentShield API",
     version="1.0.0",
     lifespan=lifespan,
     default_response_class=ORJSONResponse,
-    dependencies=[Depends(global_security_guard)],  # <--- AQUÍ ESTÁ EL CANDADO MAESTRO
+    dependencies=[Depends(global_security_guard)],
 )
 
-# 5. PROTOCOLO ESPEJO: Sincronización Universal de Precios al Inicio
-from app.services.pricing_sync import sync_universal_prices
+# Setup Monitoring & Middlewares
+setup_monitoring(app)
+app.middleware("http")(security_guard_middleware)
 
-
-@app.on_event("startup")
-async def startup_event():
-    # Sincronización de precios en segundo plano al iniciar
-    # Esto carga miles de modelos de LiteLLM a Redis en segundos
-    asyncio.create_task(sync_universal_prices())
-
-
-# Setup Observability (OTEL + Grafana)
-setup_observability(app)
-
-
-# --- 🛡️ SECURITY MIDDLEWARE: CLOUDFLARE AUTH + HSTS 🛡️ ---
-@app.middleware("http")
-async def security_guard(request: Request, call_next):
-    # 1. Bypass para Health Check, Desarrollo y CORS Preflight (OPTIONS)
-    real_ip = request.headers.get("cf-connecting-ip", request.client.host)
-    if (
-        request.url.path == "/health"
-        or request.method == "OPTIONS"
-        or os.getenv("ENVIRONMENT") == "development"
-        or real_ip == "127.0.0.1"
-    ):
-        return await call_next(request)
-
-    # 2. VERIFICACIÓN DE CLOUDFLARE (El Candado)
-    # Usamos la nueva llave 'X-AgentShield-Auth'
-    expected_secret = os.getenv("CLOUDFLARE_PROXY_SECRET")
-    incoming_secret = request.headers.get("X-AgentShield-Auth")
-
-    if expected_secret and incoming_secret != expected_secret:
-        # Usamos el logger 'agentshield' configurado globalmente
-        # Intentamos sacar la IP real para el log, si no, usamos la del host
-        real_ip = request.headers.get("cf-connecting-ip", request.client.host)
-        logger.warning(f"⛔ Direct access blocked from {real_ip}")
-        return JSONResponse(
-            status_code=403, content={"error": "Direct access forbidden. Use getagentshield.com"}
-        )
-
-    # 3. PROCESAR PETICIÓN
-    response = await call_next(request)
-
-    # 4. INYECCIÓN HSTS (El Blindaje SSL)
-    # Obliga al navegador a recordar que este sitio SOLO funciona con HTTPS por 1 año.
-    # includeSubDomains: Protege también api.tudominio.com, etc.
-    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-
-    # 5. CABECERAS EXTRA DE SEGURIDAD (Bonus Enterprise)
-    # Evita que tu API sea cargada en iframes ajenos (Clickjacking)
-    response.headers["X-Frame-Options"] = "DENY"
-    # Evita que el navegador adivine tipos de archivo (MIME Sniffing)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-
-    return response
-
-
-# 1. Configuración CORS (Production Ready)
-# [MODIFIED] Multi-Tenant SaaS Mode: Allow any origin to support dynamic domains
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Permite chat.cocacola.com, chat.pepsi.com, etc.
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 1.5. Security Headers (Trusted Host)
-# [MODIFIED] Multi-Tenant SaaS Mode: Allow any host header
 app.add_middleware(
     TrustedHostMiddleware,
-    allowed_hosts=["*"],  # Multi-tenant requires accepting dynamic CNAMEs
+    allowed_hosts=["*"],
 )
 
-# 2. Conectar Routers
+# Register Routers
 from app.routers import (
-    admin_chat,
-    admin_roles,
-    audit,
-    embeddings,
-    feedback,
-    forensics,
-    images,
-    invoices,
-    public_config,
-    tools,
-    trust,
-    webhooks,
+    admin_chat, admin_roles, analytics, audit, authorize, 
+    compliance, dashboard, embeddings, feedback, forensics, 
+    images, invoices, onboarding, proxy, public_config, 
+    receipt, tools, trust, webhooks
 )
 
-app.include_router(public_config.router)  # [NEW] Zero-Touch Config
+app.include_router(public_config.router)
 app.include_router(authorize.router)
 app.include_router(receipt.router)
 app.include_router(dashboard.router)
@@ -327,51 +98,27 @@ app.include_router(tools.router)
 app.include_router(images.router)
 app.include_router(forensics.router)
 app.include_router(trust.router)
-app.include_router(admin_roles.router)  # [NEW] AI Role Architect
-app.include_router(webhooks.router)  # [NEW] Internal DB Webhooks
-
-# Endpoint de salud para Render (ping)
-# Endpoint de salud para Render (Deep Health Check)
-import time
-
-from app.db import redis_client, supabase
-
+app.include_router(admin_roles.router)
+app.include_router(webhooks.router)
 
 @app.get("/health")
 async def health_check(request: Request, full: bool = False):
-    """
-    Liveness & Readiness Probe.
-    Competencia: Devuelve 503 si no estamos listos para tráfico.
-    """
     if not MODELS_LOADED:
-        # Si usáramos K8s, devolveríamos 503 aquí para Readiness.
-        # Para Render, devolvemos 200 pero indicamos estado para debug.
-        # Si el Load Balancer respeta códigos, 503 es mejor.
-        # Mantendremos 200 para que Render no reinicie el pod, pero el dashboard sabrá que estamos 'warming_up'.
         return JSONResponse(status_code=200, content={"status": "warming_up", "ready": False})
 
     health_status = {
         "status": "ok",
         "ready": True,
-        "service": "agentshield-core",
         "timestamp": time.time(),
-        "version": "1.0.0",
     }
 
     if full:
         try:
-            # 1. Check Redis
             if not await redis_client.ping():
                 raise Exception("Redis PING failed")
-            health_status["redis"] = "connected"
-
-            # 2. Check Supabase (Query simple)
             supabase.table("cost_centers").select("id").limit(1).execute()
-            health_status["db"] = "connected"
-
+            health_status["infra"] = "connected"
         except Exception as e:
-            # Si infraestructura crítica falla, 503
-            logger.critical(f"Health Check Failed: {e}")
-            raise HTTPException(status_code=503, detail=f"Infrastructure Error: {e}")
+            raise HTTPException(status_code=503, detail=str(e))
 
     return health_status

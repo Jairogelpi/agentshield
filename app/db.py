@@ -10,14 +10,10 @@ from decimal import Decimal
 import redis.asyncio as redis
 from supabase import Client, create_client
 
+from app.config import settings
 from app.utils import fast_json as json
 
 logger = logging.getLogger("agentshield.db")
-
-# Configuración
-# Configuración
-# MOVED TO LAZY LOAD INSIDE FUNCTIONS TO AVOID IMPORT-TIME MISSING VARS
-REDIS_URL = os.getenv("REDIS_URL")
 
 # Lazy-loaded clients (don't create at import time for tests)
 _supabase_client: Client | None = None
@@ -28,22 +24,11 @@ def get_supabase() -> Client:
     """Lazy-load Supabase client."""
     global _supabase_client
     if _supabase_client is None:
-        url = os.getenv("SUPABASE_URL")
-        key = os.getenv("SUPABASE_SERVICE_KEY")
+        url = settings.SUPABASE_URL
+        key = settings.SUPABASE_SERVICE_KEY
 
         if not url or not key:
-            logger.critical(
-                f"🔥 FATAL: Missing Supabase Credentials. URL={url is not None}, KEY={key is not None}"
-            )
-            # Try to load dotenv again just in case
-            from dotenv import load_dotenv
-
-            load_dotenv()
-            url = os.getenv("SUPABASE_URL")
-            key = os.getenv("SUPABASE_SERVICE_KEY")
-
-            if not url or not key:
-                raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set.")
+            raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in Environment.")
 
         _supabase_client = create_client(url, key)
     return _supabase_client
@@ -54,7 +39,7 @@ def get_redis():
     global _redis_client
     if _redis_client is None:
         _redis_client = redis.from_url(
-            REDIS_URL or "redis://localhost:6379",
+            settings.REDIS_URL,
             decode_responses=True,
             socket_timeout=5.0,
             socket_connect_timeout=5.0,

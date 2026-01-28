@@ -49,27 +49,11 @@ def get_tenant_rate_limit_key(request: Request):
     return get_real_ip_address(request)
 
 
+from app.config import settings
+
 # Inicializamos el Limiter con Redis
-raw_redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
-
-# DEBUG: Ver qué está llegando realmente (Sanitized Log)
-masked_url = raw_redis_url.split("@")[-1] if "@" in raw_redis_url else "LOCAL"
-logger.info(f"🔍 LIMITER: Raw REDIS_URL detected: ...@{masked_url}")
-
-# 1. Limpieza agresiva (Quotes, Whitespace)
-redis_url = raw_redis_url.strip().strip("'").strip('"')
-
-# 2. Sanitización de Esquema (Limits no soporta +async)
-if "redis+async" in redis_url:
-    redis_url = redis_url.replace("redis+async", "redis")
-
-# Handle rediss (SSL) cases too
-if "rediss+async" in redis_url:
-    redis_url = redis_url.replace("rediss+async", "rediss")
-
-logger.info(
-    f"✅ LIMITER: Normalized URL for Limits: {redis_url.split('://')[0]}://...@{redis_url.split('@')[-1] if '@' in redis_url else 'LOCAL'}"
-)
+# Normalizamos la URL para el motor de 'limits' (no soporta +async)
+redis_url = settings.REDIS_URL.replace("redis+async", "redis").replace("rediss+async", "rediss")
 
 # INSTANCIA FINAL
 # Usamos la nueva key_func inteligente

@@ -1,22 +1,15 @@
-# app/services/identity.py
 import json
 import logging
-import os
-
 from fastapi import Header, HTTPException
 from jose import JWTError, jwt
 
+from app.config import settings
 from app.db import redis_client, supabase
 
 logger = logging.getLogger("agentshield.identity")
 
-# Use the same secret key as logic.py (Shared Secret)
-SECRET_KEY = os.getenv("ASARL_SECRET_KEY") or os.getenv("JWT_SECRET_KEY")
-if not SECRET_KEY:
-    # Fail fast if security is not configured
-    logger.error("FATAL: JWT_SECRET_KEY/ASARL_SECRET_KEY not set.")
-
-ALGORITHM = "HS256"
+SECRET_KEY = settings.SECRET_KEY
+ALGORITHM = settings.ALGORITHM
 
 
 class VerifiedIdentity:

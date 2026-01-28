@@ -1,23 +1,18 @@
-# app/logic.py
-import asyncio
 import hashlib
 import json
 import logging
-import os
 import time
 
 from fastapi import HTTPException
 from jose import JWTError, jwt
 
+from app.config import settings
 from app.db import redis_client, supabase
 
 logger = logging.getLogger("agentshield.auth")
 
-# Estas variables DEBEN estar en tu entorno de Render (.env)
-# Use a default for tests - will fail at runtime if used without proper env
-SECRET_KEY = os.getenv("ASARL_SECRET_KEY", "test-secret-key-do-not-use-in-production")
-
-ALGORITHM = "HS256"
+SECRET_KEY = settings.SECRET_KEY
+ALGORITHM = settings.ALGORITHM
 
 
 def create_aut_token(data: dict):
@@ -147,7 +142,7 @@ def check_policy(policy_rules, request_data, current_spend, monthly_limit):
 
 
 # --- DATA RESIDENCY ---
-CURRENT_SERVER_REGION = os.getenv("SERVER_REGION", "eu")
+CURRENT_SERVER_REGION = settings.model_dump().get("SERVER_REGION", "eu")
 
 
 async def verify_residency(tenant_id: str):
