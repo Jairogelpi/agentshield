@@ -27,6 +27,10 @@ class Settings(BaseSettings):
         "/v1/onboarding/invite",
     ]
     
+    # Brute Force Protection
+    AUTH_BRUTE_FORCE_LIMIT: int = 5
+    AUTH_BRUTE_FORCE_WINDOW: int = 300  # 5 minutes
+    
     # Defaults
     DEFAULT_ROLE: str = "member"
     DEFAULT_FUNCTION: str = "Employee"

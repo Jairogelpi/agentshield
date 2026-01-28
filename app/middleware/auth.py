@@ -2,16 +2,49 @@ import logging
 from fastapi import Request, HTTPException
 from app.logic import verify_api_key
 from app.config import settings
+from app.db import redis_client
+from app.limiter import get_real_ip_address
 
 logger = logging.getLogger("agentshield.auth")
 
 async def global_security_guard(request: Request):
-    # Usar whitelist configurada en settings
-    if request.url.path in settings.AUTH_WHITELIST:
+    # 1. Whitelist con soporte de prefijos (para /docs/, /health/, etc.)
+    path = request.url.path
+    if any(path.startswith(prefix) for prefix in settings.AUTH_WHITELIST):
         return
 
     if request.method == "OPTIONS":
         return
 
-    # Exigir credenciales
-    await verify_api_key(request.headers.get("Authorization"))
+    # 2. Protección Brute Force (Pre-auth IP Check)
+    client_ip = get_real_ip_address(request)
+    block_key = f"auth_block:{client_ip}"
+    
+    if await redis_client.get(block_key):
+        logger.warning(f"🛑 Blocked request from {client_ip} (Brute Force Protection)")
+        raise HTTPException(429, "Too many failed authentication attempts. Please try again later.")
+
+    # 3. Exigir credenciales e Inyectar Estado
+    try:
+        tenant_id = await verify_api_key(request.headers.get("Authorization"))
+        
+        # Inyectamos en el estado para que los routers no tengan que validar de nuevo
+        request.state.tenant_id = tenant_id
+        
+        # Si tiene éxito, podemos limpiar el contador de fallos (opcional, pero justo)
+        await redis_client.delete(f"auth_fail:{client_ip}")
+        
+    except HTTPException as e:
+        # 4. Contador de Fallos (Brute Force Detection)
+        fail_key = f"auth_fail:{client_ip}"
+        fails = await redis_client.incr(fail_key)
+        
+        if fails == 1:
+            await redis_client.expire(fail_key, settings.AUTH_BRUTE_FORCE_WINDOW)
+            
+        if fails >= settings.AUTH_BRUTE_FORCE_LIMIT:
+            # Bloqueo total por el mismo tiempo que la ventana
+            await redis_client.setex(block_key, settings.AUTH_BRUTE_FORCE_WINDOW, "blocked")
+            logger.error(f"🚨 IP {client_ip} reached fail limit ({fails}). Blocking for {settings.AUTH_BRUTE_FORCE_WINDOW}s")
+            
+        raise e

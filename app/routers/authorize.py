@@ -22,78 +22,28 @@ router = APIRouter()
 
 
 # --- HELPER: Autenticación de Tenant (Production Grade) ---
-async def get_tenant_from_header(x_api_key: str = Header(...)):
+async def get_tenant_from_header(request: Request):
     """
-    1. Hashea la API Key entrante.
-    2. Busca en Redis (Cache Hit).
-    3. Si falla, busca en Supabase (Cache Miss) y guarda en Redis.
+    Recupera el tenant_id inyectado por el middleware global.
+    Si no existe, es un error de configuración del sistema.
     """
-    # Hash SHA256 para no mover keys en plano
-    api_key_hash = hashlib.sha256(x_api_key.encode()).hexdigest()
-
-    # Check Redis Cache
-    cache_key = f"tenant:apikey:{api_key_hash}"
-    cached_tenant_id = await redis_client.get(cache_key)
-    if cached_tenant_id:
-        return cached_tenant_id
-
-    # Check Database (Source of Truth)
-    response = (
-        supabase.table("tenants").select("id, is_active").eq("api_key_hash", api_key_hash).execute()
-    )
-
-    if not response.data:
-        raise HTTPException(status_code=401, detail="Invalid API Key")
-
-    tenant = response.data[0]
-    if not tenant["is_active"]:
-        raise HTTPException(status_code=403, detail="Tenant is inactive")
-
-    # Guardar en Redis por 1 hora (TTL 3600)
-    await redis_client.setex(cache_key, 3600, tenant["id"])
-
-    return tenant["id"]
+    tenant_id = getattr(request.state, "tenant_id", None)
+    if not tenant_id:
+        # Fallback por si alguien llama a este endpoint sin pasar por el guard (no debería pasar)
+        auth = request.headers.get("Authorization")
+        if not auth:
+            raise HTTPException(401, "Missing Authorization")
+        from app.logic import verify_api_key
+        tenant_id = await verify_api_key(auth)
+    return tenant_id
 
 
 # --- HELPER: Autenticación de Admin (JWT) ---
-async def get_tenant_from_jwt(credentials: HTTPAuthorizationCredentials = Security(security)):
+async def get_tenant_from_jwt(request: Request):
     """
-    Valida el Token JWT de Supabase (Usuario Logueado) y devuelve su Tenant ID.
-    Para Dashboard Web (Frontend).
+    Igual que el anterior, pero con alias para claridad en el Dashboard.
     """
-    token = credentials.credentials
-
-    try:
-        # 1. Validar Token contra Supabase Auth
-        user_response = supabase.auth.get_user(token)
-        user_id = user_response.user.id
-
-        # 2. Buscar Tenant asociado al usuario
-        # Nota: Asumimos que existe un campo 'user_id' en tenants.
-        # Para MVP: Buscamos en 'tenants' donde 'user_id' sea igual al user_id
-
-        # Cache Strategy
-        cache_key = f"tenant:user:{user_id}"
-        cached_tenant = await redis_client.get(cache_key)
-        if cached_tenant:
-            return cached_tenant
-
-        # DB Lookup
-        res = supabase.table("tenants").select("id").eq("owner_id", user_id).execute()
-
-        if not res.data:
-            # Fallback: Si no tiene tenant propio, error.
-            raise HTTPException(status_code=403, detail="User has no associated tenant")
-
-        tenant_id = res.data[0]["id"]
-        await redis_client.setex(cache_key, 300, tenant_id)  # Cache 5 min
-
-        return tenant_id
-
-    except Exception as e:
-        logger.warning(f"JWT Auth Failed: {e}")
-        # Si Supabase falla validando el token
-        raise HTTPException(status_code=401, detail="Invalid Session Token")
+    return await get_tenant_from_header(request)
 
 
 # --- HELPER: Obtener Gasto Actual ---
