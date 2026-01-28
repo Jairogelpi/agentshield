@@ -48,14 +48,17 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
       - name: Auto-Fix & Format
         if: needs.changes.outputs.python == 'true' || needs.changes.outputs.rust == 'true'
         run: |
-          pip install ruff
+          uv pip install ruff
           # Run check with fix, allow failure initially to maximize fixes
-          ruff check --fix . || true
+          uv run ruff check --fix . || true
           # Run formatter
-          ruff format .
+          uv run ruff format .
       
       - name: Commit changes
         if: needs.changes.outputs.python == 'true' || needs.changes.outputs.rust == 'true'
@@ -68,7 +71,7 @@ jobs:
         if: needs.changes.outputs.python == 'true' || needs.changes.outputs.sql == 'true'
         run: |
           if [ "${{ needs.changes.outputs.python }}" == "true" ]; then
-            pip install pip-audit && pip-audit -r requirements.txt --ignore-vuln GHSA-p46v-3cf4-92rq || true
+            uv pip install pip-audit && uv run pip-audit -r requirements.txt --ignore-vuln GHSA-p46v-3cf4-92rq || true
           fi
           if [ "${{ needs.changes.outputs.sql }}" == "true" ]; then
             python scripts/validate_schemas.py
