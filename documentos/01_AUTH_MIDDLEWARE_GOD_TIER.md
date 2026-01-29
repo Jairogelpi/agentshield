@@ -1,6 +1,6 @@
-# 🛡️ El Guardián de la Frontera: Auth Middleware (God Tier)
+# 🛡️ El Guardián de la Frontera: Auth Middleware (God Tier Sensor)
 
-Este no es solo un archivo de "login"; es el **filtro de seguridad más crítico** de todo AgentShield. Si este archivo falla, el búnker queda abierto. Si este archivo es lento, todo el búnker es lento. Por eso, su diseño es "God Tier": combina protección militar con velocidad de competición.
+Este no es solo un archivo de "login"; es un **Sensor de Inteligencia de Seguridad** crítico. En AgentShield 2026, el middleware actúa como el sistema inmunológico del búnker, detectando y señalizando amenazas al SIEM antes de que toquen una sola línea de lógica de negocio.
 
 ---
 
@@ -31,9 +31,9 @@ No solo validamos llaves, vigilamos el comportamiento. Usamos **Redis** para rec
 Este es el hilo conductor de la verdad. Inyectamos un `trace_id` universal desde el primer milisegundo.
 *   **Por qué es mejor:** Si hay un error, el sistema te da un `X-Request-ID`. Con ese código, puedes rastrear exactamente qué pasó en los logs, las políticas y hasta la respuesta final de la IA. Es **transparencia forense**.
 
-### 4. Señalización SIEM (Immune System Signaling)
-No solo bloqueamos; alertamos. Usamos el `event_bus` para notificar fallos en tiempo real.
-*   **Por qué es mejor:** Si una IP es bloqueada por fuerza bruta, el sistema emite un evento `AUTH_BRUTE_FORCE_LIMIT_REACHED` de severidad `CRITICAL`. Esto activa playbooks de seguridad automatizados. Es **seguridad proactiva**.
+### 4. Sensor SIEM Activo (Immune System Signaling)
+En 2026, bloquear no es suficiente; hay que informar. El middleware es un **sensor proactivo** que alimenta el `event_bus`.
+*   **Por qué es mejor:** Capta el "ruido de fondo" de los ataques (brute force, scanners) y emite eventos `AUTH_BRUTE_FORCE_LIMIT_REACHED`. Esto permite al equipo de SecOps visualizar el mapa de amenazas en tiempo real. Es **visibilidad total de la frontera**.
 
 ### 5. Resiliencia de Clase Enterprise
 El sistema está diseñado para no rendirse. Si Redis parpadea, AgentShield prioriza la disponibilidad sin comprometer la validación de llaves principal.

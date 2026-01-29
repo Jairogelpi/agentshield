@@ -1,6 +1,6 @@
-# 🛡️ El Escudo Invisible (Security Middleware: God Tier)
+# 🛡️ El Escudo Invisible (Security Middleware: God Tier Sensor)
 
-Si el archivo de autenticación (`auth.py`) es el **Portero**, este archivo (`security.py`) es la **Cerca Eléctrica e Invisible** que rodea todo el edificio de AgentShield.
+Si el archivo de autenticación (`auth.py`) es el **Portero Inteligente**, este archivo (`security.py`) es la **Cerca Eléctrica Sensorial** de AgentShield. No solo protege, sino que "siente" los ataques antes de que lleguen a la puerta.
 
 ---
 
@@ -19,10 +19,10 @@ Una vez que estás dentro, nos aseguramos de que nadie pueda interceptar la comu
 *   **La magia:** Activamos `Strict-Transport-Security` con un `max-age` de 2 años, subdominios y pre-carga.
 *   **Soberanía de Datos:** Inyectamos `X-AgentShield-Region` en cada respuesta para certificar dónde están siendo procesados los datos.
 
-### No. 3: Respuesta Unificada y Trazabilidad (The Trace Anchor)
-Convertimos cada error de seguridad en una pista forense.
-*   **¿Cómo funciona?:** Si bloqueamos un acceso, el sistema devuelve un JSON estructurado que incluye el `trace_id`. 
-*   **Por qué es perfecto:** Permite que el equipo de seguridad o el usuario final reporte un problema con un código único que vincula la red, la app y el SIEM.
+### No. 3: Sensor de Red (The Trace Anchor & SIEM)
+Convertimos cada bloqueo en inteligencia de amenazas.
+*   **La magia:** Al interceptar un acceso no autorizado por Cloudflare, el sistema no solo bloquea; emite una señal de severidad `WARNING` o `CRITICAL` al SIEM.
+*   **Por qué es perfecto:** Permite al CISO ver intentos de bypass de la red perimetral. Cada evento lleva el `trace_id` original, permitiendo una trazabilidad total desde el primer cable hasta la última respuesta de la IA.
 
 ---
 

@@ -74,6 +74,8 @@ El sistema se despliega como un SaaS completo (Zero Install):
 *   [**17. Identity Service (Verified Envelopes)**](documentos/17_IDENTITY_SERVICE_DEEP_DIVE.md)
 *   [**18. Observer Service (Ethics & Truth)**](documentos/18_OBSERVER_SERVICE_DEEP_DIVE.md)
 *   [**19. Evolutionary Hive Mind (Collective Wisdom)**](documentos/19_HIVE_MIND_DEEP_DIVE.md)
+*   [**20. Portfolio de Apps Zenith (Business Value)**](documentos/20_PORTFOLIO_APPS_ZENITH.md)
+*   [**21. El Viaje del Request 2026 (Sequence Diagram)**](documentos/21_EL_VIAJE_DEL_REQUEST_2026.md)
 
 ---
 
