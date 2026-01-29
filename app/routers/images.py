@@ -5,7 +5,7 @@ from litellm import image_generation
 
 from app.services import billing
 from app.services.identity import VerifiedIdentity, verify_identity_envelope
-from app.services.limiter import charge_hierarchical_wallets, check_hierarchical_budget
+from app.services.budget_limiter import charge_hierarchical_wallets, check_hierarchical_budget
 
 router = APIRouter(tags=["Images & Creativity"])
 logger = logging.getLogger("agentshield.images")
@@ -33,7 +33,7 @@ async def proxy_images(
 
     # 1. GOBIERNO FINANCIERO (Presupuesto)
     # Calculamos coste dinámico usando el Estimador (consulta DB/Redis)
-    from app.estimator import estimator
+    from app.cost_estimator import estimator
 
     # input_unit_count=1 (1 imagen)
     estimated_cost = await estimator.estimate_cost(

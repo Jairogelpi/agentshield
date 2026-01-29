@@ -4,7 +4,7 @@ from fastapi import HTTPException, Request
 
 from app.config import settings
 from app.db import redis_client
-from app.limiter import get_real_ip_address
+from app.http_limiter import get_real_ip_address
 from app.logic import verify_api_key
 from app.services.event_bus import event_bus
 

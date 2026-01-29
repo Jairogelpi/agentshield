@@ -11,7 +11,7 @@ from typing import Any
 from app.db import supabase
 from app.services.carbon import carbon_governor
 from app.services.crypto_signer import hash_content, sign_payload
-from app.services.estimator import estimate_cost
+from app.services.market_pricing import estimate_cost
 
 logger = logging.getLogger("agentshield.auditor")
 

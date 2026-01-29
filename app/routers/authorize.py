@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.db import get_function_config, redis_client, supabase
-from app.estimator import estimator
+from app.cost_estimator import estimator
 from app.logic import create_aut_token, get_active_policy
 from app.models import AuthorizeRequest, AuthorizeResponse, CostCenterBudgetUpdate
 from app.webhooks import trigger_webhook
@@ -102,7 +102,7 @@ async def get_cost_center_budget(tenant_id: str, cost_center_id: str):
     return 0.0
 
 
-from app.limiter import limiter
+from app.http_limiter import limiter
 
 
 # --- ENDPOINT PRINCIPAL ---

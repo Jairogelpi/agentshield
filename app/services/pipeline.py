@@ -5,7 +5,7 @@ import uuid
 from fastapi import HTTPException, Request
 
 from app.config import settings
-from app.limiter import limiter
+from app.http_limiter import limiter
 from app.schema import DecisionContext
 from app.services.carbon import carbon_governor
 from app.services.event_bus import event_bus

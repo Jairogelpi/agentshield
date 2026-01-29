@@ -9,7 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from opentelemetry import trace
 
-from app.limiter import limiter
+from app.http_limiter import limiter
 from app.schema import DecisionContext
 from app.services.cache import set_semantic_cache
 from app.services.carbon import carbon_governor
@@ -21,7 +21,7 @@ tracer = trace.get_tracer(__name__)
 
 # Servicios del Decision Graph
 from app.services.identity import VerifiedIdentity, verify_identity_envelope
-from app.services.limiter import charge_hierarchical_wallets, check_hierarchical_budget
+from app.services.budget_limiter import charge_hierarchical_wallets, check_hierarchical_budget
 from app.services.llm_gateway import execute_with_resilience
 from app.services.observer import observer_service
 from app.services.pii_guard import pii_guard
