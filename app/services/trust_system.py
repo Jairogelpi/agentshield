@@ -85,6 +85,17 @@ class TrustSystem:
                 )
             else:
                 policy["mode"] = "restricted"
+        
+        # 3. SMART ARBITRAGE (Profit Center Logic)
+        # Si el usuario NO pide explícitamente "raw capability" y la tarea es simple, ahorramos dinero.
+        # Esto valida la promesa de "-60% Costes".
+        if "gpt-4" in requested_model.lower() or "opus" in requested_model.lower():
+             # NOTA: En producción, esto usaría el Clasificador de Intención (router).
+             # Por ahora, simulamos que si no es un usuario VIP (Trust > 95), aplicamos ahorro agresivo.
+             if score < 95:
+                 logger.info(f"💰 Arbitage Opportunity: Downgrading {requested_model} to agentshield-fast for optimization.")
+                 policy["effective_model"] = "agentshield-fast"
+                 policy["arbitrage_active"] = True
 
         return policy
 
