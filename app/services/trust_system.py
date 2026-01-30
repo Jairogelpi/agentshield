@@ -40,7 +40,7 @@ class TrustSystem:
             return TRUST_CONFIG["default"]
 
     async def enforce_policy(
-        self, tenant_id: str, user_id: str, requested_model: str
+        self, tenant_id: str, user_id: str, requested_model: str, intent: str = "general"
     ) -> dict[str, Any]:
         """
         El "Decision Gate" del Decision Graph.
@@ -86,16 +86,20 @@ class TrustSystem:
             else:
                 policy["mode"] = "restricted"
         
-        # 3. SMART ARBITRAGE (Profit Center Logic)
-        # Si el usuario NO pide explícitamente "raw capability" y la tarea es simple, ahorramos dinero.
-        # Esto valida la promesa de "-60% Costes".
+        # 3. SMART ARBITRAGE (Context-Aware Profit Logic)
+        # "Maximum Power, Minimum Cost": Solo degradamos si la tarea NO requiere un genio.
         if "gpt-4" in requested_model.lower() or "opus" in requested_model.lower():
-             # NOTA: En producción, esto usaría el Clasificador de Intención (router).
-             # Por ahora, simulamos que si no es un usuario VIP (Trust > 95), aplicamos ahorro agresivo.
-             if score < 95:
-                 logger.info(f"💰 Arbitage Opportunity: Downgrading {requested_model} to agentshield-fast for optimization.")
-                 policy["effective_model"] = "agentshield-fast"
-                 policy["arbitrage_active"] = True
+             # Tareas complejas que MERECEN GPT-4
+             complex_intents = ["coding", "legal_analysis", "complex_reasoning", "math"]
+             
+             if intent not in complex_intents:
+                 # Si es chat, resumen o creativo simple, NO gastamos dinero en GPT-4.
+                 # Ahorro: 95% por request.
+                 if score < 98: # Solo VIPs absolutos pueden quemar dinero en "Hola mundo"
+                     logger.info(f"💰 Smart Arbitrage: {intent} does not need {requested_model}. Downgrading.")
+                     policy["effective_model"] = "agentshield-fast"
+                     policy["arbitrage_active"] = True
+                     policy["arbitrage_reason"] = f"Task type '{intent}' optimized for cost."
 
         return policy
 

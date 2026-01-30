@@ -66,7 +66,9 @@ class DecisionPipeline:
         # 3. RISK ENGINE (Trust Gate)
         try:
             trust_policy = await asyncio.wait_for(
-                trust_system.enforce_policy(ctx.tenant_id, ctx.user_id, ctx.requested_model),
+                trust_system.enforce_policy(
+                    ctx.tenant_id, ctx.user_id, ctx.requested_model, intent=ctx.intent
+                ),
                 timeout=2.0,
             )
         except TimeoutError:
