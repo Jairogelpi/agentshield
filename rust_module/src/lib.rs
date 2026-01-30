@@ -166,6 +166,50 @@ pub fn sign_c2pa_image_fast(
     Ok(pyo3::types::PyBytes::new_bound(py, &output_vec).unbind().into())
 }
 
+/// -------------------------------------------------------------------------
+/// C2PA / Content Authenticity Signing
+/// -------------------------------------------------------------------------
+
+/// Genera una firma criptográfica simulando un manifiesto C2PA.
+/// Retorna un JSON string con { "hash": "...", "signature": "...", "public_key": "..." }
+#[pyfunction]
+fn sign_c2pa_manifest(content: &str, author_id: &str) -> PyResult<String> {
+    // 1. Hash del contenido (SHA-256)
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    let content_hash = hasher.finalize();
+    let content_hash_hex = hex::encode(content_hash);
+
+    // 2. Generar par de claves efímeras para demo (En prod usarían claves persistentes)
+    let mut csprng = OsRng;
+    let signing_key = SigningKey::generate(&mut csprng);
+    let verifying_key = signing_key.verifying_key();
+    
+    // 3. Crear el payload a firmar (Manifest)
+    let manifest_payload = format!("{}:{}:{}", author_id, content_hash_hex, "AgentShield-C2PA-v1");
+    
+    // 4. Firmar
+    let signature = signing_key.sign(manifest_payload.as_bytes());
+    
+    // 5. Encode a Base64
+    let signature_b64 = general_purpose::STANDARD.encode(signature.to_bytes());
+    let public_key_b64 = general_purpose::STANDARD.encode(verifying_key.to_bytes());
+    
+    // 6. Construir JSON de respuesta
+    let json_response = format!(
+        r#"{{
+            "content_hash": "{}",
+            "signature": "{}",
+            "public_key": "{}",
+            "algo": "ed25519",
+            "manifest_version": "c2pa.v1.demo"
+        }}"#,
+        content_hash_hex, signature_b64, public_key_b64
+    );
+
+    Ok(json_response)
+}
+
 /// El módulo Python
 #[pymodule]
 fn agentshield_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -173,6 +217,7 @@ fn agentshield_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(scan_pii_fast, m)?)?;
     m.add_function(wrap_pyfunction!(scrub_pii_fast, m)?)?;
     m.add_function(wrap_pyfunction!(scan_entropy_fast, m)?)?;
+    m.add_function(wrap_pyfunction!(sign_c2pa_manifest, m)?)?; // <--- NEW!
     Ok(())
 }
 
