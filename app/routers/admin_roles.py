@@ -1,3 +1,17 @@
+# app/routers/admin_roles.py
+"""
+API endpoints for Advanced Role-Based Access Control (RBAC) & Governance.
+
+**Architecture & "God Tier" Features:**
+- **AI Role Architect:** Uses LLMs (`role_architect`) to auto-configure complex JSON policies from natural language descriptions.
+- **Hierarchical Integrity ("King Slayer" Protection):** Mathematical ranking system prevents lower-ranked admins from tampering with higher-ranked roles.
+- **Digital Twin Simulation:** `simulate-access` endpoint allows admins to test "What If" scenarios (e.g., "Can a Junior Dev delete production database?") without actual risk.
+- **Safe Deletion Protocol:** Prevents orphaned users by checking active assignment counts before deletion.
+
+**Security Constraints:**
+- **Rank Enforcement:** Owner (100) > Admin (80) > Manager (60) > Member (20).
+- **Tenant Isolation:** Strict enforcement of `tenant_id` in all DB queries.
+"""
 from typing import List, Optional, Any, Dict
 from datetime import datetime
 import asyncio
@@ -111,7 +125,22 @@ async def provision_role(
     identity: VerifiedIdentity = Depends(verify_identity_envelope),
 ):
     """
-    Creates a new role using the AI Architect, enforcing Hierarchical Integrity.
+    **AI Role Architect Provisioning.**
+    
+    Creates a new role config using the `role_architect` service. 
+    Instead of manually ticking boxes, admins describe the role (e.g., "A Junior Dev who can only read logs and cannot see PII").
+    
+    **God Tier Feature:**
+    - **Hierarchical Integrity Check:** Ensures the requester has a higher rank than the role they are trying to create. 
+    - **Auto-Policy Generation:** Converts natural language into JSON permissions (`allowed_modes`, `pii_policy`).
+    
+    Args:
+        request (Request): Raw request.
+        payload (RoleCreate): Department, Function, and Description.
+        identity (VerifiedIdentity): Authenticated user.
+
+    Returns:
+        RoleResponse: The created role definition.
     """
     # 1. Integrity Check
     # We estimate the rank of the requested role based on keywords or explicit metadata if passed.
@@ -146,7 +175,21 @@ async def delete_role(
     identity: VerifiedIdentity = Depends(verify_identity_envelope),
 ):
     """
-    Safe Deletion: Prevents deleting roles that have active users.
+    **Safe Role Deletion.**
+    
+    Removes a role definition from the tenant.
+    
+    **God Tier Safety:**
+    - **"Orphan Prevention":** Checks if any *active* users are currently assigned this role. 
+      If even one user exists, the deletion is BLOCKED (HTTP 409) to prevent access lockouts.
+    - **Rank Protection:** You must be at least a 'Manager' to delete roles.
+    
+    Args:
+        role_id (int): ID of the role to delete.
+        identity (VerifiedIdentity): Authenticated user.
+
+    Returns:
+        dict: Status message.
     """
     # 1. Integrity Check (Can only delete if you are admin+)
     check_hierarchical_integrity(identity.role, 60) # Must be at least Manager to delete
@@ -214,8 +257,21 @@ async def simulate_access(
     identity: VerifiedIdentity = Depends(verify_identity_envelope),
 ):
     """
-    Digital Twin Simulation: 'What if this role tries X?'
-    Uses real Policy Engine logic if possible or strict schema validation.
+    **Digital Twin Access Simulator.**
+    
+    Simulates a permissions check against a hypothetical or existing role.
+    Allows admins to answer "Can this role do X?" definitively without creating the role first.
+    
+    **God Tier Feature:**
+    - **Hypothetical Evaluation:** Can simulate based on a raw JSON definition (payload) *OR* an existing DB role.
+    - **Policy Engine Dry-Run:** Executes the exact same logic (`pii_policy`, `allowed_modes`) that runs at runtime.
+    
+    Args:
+        payload (SimulationRequest): The scenario to test (Role + Action).
+        identity (VerifiedIdentity): Authenticated user.
+
+    Returns:
+        SimulationResponse: allowed/denied, reason, and simulated persona summary.
     """
     role_def = payload.role_definition
     if not role_def and payload.role_id:

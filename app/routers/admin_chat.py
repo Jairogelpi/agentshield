@@ -1,3 +1,17 @@
+# app/routers/admin_chat.py
+"""
+API endpoints for the "Semantic Policy Copilot" (Admin Chat).
+
+**Architecture & "God Tier" Features:**
+- **Semantic Policy Generation:** Converts natural language (e.g., "Block Junior Devs from using GPT-4") into structured JSON policies using `policy_copilot`.
+- **Pre-Flight Simulation:** Automatically calculates "Blast Radius" (how many past requests *would* have been blocked) to warn admins before applying rules.
+- **Conflict Detection:** Prevents creating duplicate or contradictory policies for the same role/tool scope.
+- **Rate Limited:** Protects LLM resources with a Redis-backed token bucket (10 req/min/admin).
+
+**Security Constraints:**
+- **RBAC:** Strictly `admin`, `manager`, or `owner` only.
+- **Audit Logging:** Every generated draft and created policy is logged to the immutable ledger.
+"""
 import logging
 import asyncio
 import time
@@ -46,8 +60,20 @@ async def copilot_create_policy(
     identity: VerifiedIdentity = Depends(verify_identity_envelope),
 ):
     """
-    Genera un borrador de política usando IA.
-    Protegido con Rate Limit y RBAC.
+    **Semantic Policy Copilot.**
+    
+    Generates a structured policy draft from natural language intent using an LLM.
+    
+    **God Tier Feature:**
+    - **Simulation Mode:** Uses `simulate_policy_impact` to run a "Dry Run" against the last 1000 requests in basic logs.
+    - **Rate Limiting:** Enforces strict quotas via Redis to prevent LLM abuse.
+    
+    Args:
+        prompt (CopilotPrompt): User's natural language intention (e.g., "Stop marketing from using code-interpreter").
+        identity (VerifiedIdentity): Authenticated Admin user.
+
+    Returns:
+        dict: A structured JSON "draft" ready for review + Impact Assessment Score.
     """
     # 1. SEGURIDAD: Validación CRÍTICA de Roles
     user_role = (identity.role or "").lower()
@@ -89,7 +115,22 @@ async def create_policy_from_draft(
     background_tasks: BackgroundTasks = BackgroundTasks()
 ):
     """
-    Confirma y guarda una política. Valida consistencia y evita basura en la DB.
+    **Policy Commitment Engine.**
+    
+    Validates and commits a confirmed Policy Draft to the database.
+    
+    **God Tier Safety:**
+    - **Conflict Detection:** Checks `check_policy_conflicts` to ensure no overlapping rules exist for the same Target/Tool.
+    - **Anti-Hallucination Check:** Verifies validity of `tool_name` against the Tool Catalog before inserting. (Prevents creating policies for non-existent tools).
+    - **Background Audit:** Asynchronously commits the creation event to the immutable Audit Log.
+    
+    Args:
+        policy (PolicyDraft): The confirmed JSON structure.
+        identity (VerifiedIdentity): Admin user.
+        background_tasks (BackgroundTasks): For non-blocking audit logging.
+
+    Returns:
+        dict: Success status and new Policy ID.
     """
     # 1. SEGURIDAD
     user_role = (identity.role or "").lower()
