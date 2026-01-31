@@ -63,11 +63,22 @@ async def copilot_create_policy(
     # 3. PERFORMANCE: llamada asíncrona real
     policy_draft = await generate_policy_json(identity.tenant_id, prompt.text)
 
+    # 4. SIMULATION MODE (Revolutionary Feature)
+    # Analizamos impacto REAL antes de sugerir
+    impact_count = 0
+    if "tool_name" in policy_draft:
+        impact_count = await simulate_policy_impact(identity.tenant_id, policy_draft["tool_name"])
+    
+    sim_msg = f"Simulación: Esta regla habría afectado a {impact_count} peticiones recientes."
+    if impact_count > 0:
+        sim_msg += " ⚠️ Impacto alto detectado."
+
     return {
         "status": "success",
         "draft": policy_draft,
         "message": "He redactado esta regla basada en tu intención.",
-        "simulation_hint": "Simulación disponible: Esta regla habría afectado a 0 requests en la última hora.",
+        "simulation_hint": sim_msg,
+        "impact_score": impact_count
     }
 
 
@@ -111,6 +122,14 @@ async def create_policy_from_draft(
                 detail=f"Tool '{policy.tool_name}' does not exist. Please register the tool in the catalog first."
             )
 
+        # 3.5 CONFLICT DETECTION (God Tier Safety)
+        has_conflict = await check_policy_conflicts(identity.tenant_id, tool_id, policy.target_role)
+        if has_conflict:
+             raise HTTPException(
+                status_code=409, 
+                detail=f"Conflict: A policy for tool '{policy.tool_name}' and role '{policy.target_role or 'ALL'}' already exists."
+            )
+
         # Paso B: Buscar Departamento (Opcional)
         target_dept_id = None
         if policy.target_dept:
@@ -144,7 +163,8 @@ async def create_policy_from_draft(
 
         res = await loop.run_in_executor(None, _insert_policy)
 
-        # 4. AUDIT (Background)
+        # 5. SIMULATION / AUDIT (Background)
+        # En background, podríamos recalcular métricas o invalidar caché
         background_tasks.add_task(
             log_audit_event, 
             identity.tenant_id, 
@@ -179,3 +199,50 @@ async def log_audit_event(tenant_id, event, details, user_id):
         )
     except Exception as e:
         logger.error(f"Failed to write audit log: {e}")
+
+async def simulate_policy_impact(tenant_id: str, tool_name: str) -> int:
+    """
+    Simula cuántas peticiones recientes habrían sido afectadas por esta regla.
+    Busca en 'request_logs' por menciones de la herramienta.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+        def _search_logs():
+            # Busco en los últimos 1000 logs menciones de la herramienta
+            # Esto es una heurística "fuzz" para simulación rápida
+            return supabase.table("request_logs")\
+                .select("id", count="exact")\
+                .eq("tenant_id", tenant_id)\
+                .ilike("prompt_text", f"%{tool_name}%")\
+                .limit(1000)\
+                .execute()
+        
+        result = await loop.run_in_executor(None, _search_logs)
+        return result.count or 0
+    except:
+        return 0
+
+async def check_policy_conflicts(tenant_id: str, tool_id: str, role: Optional[str]) -> bool:
+    """
+    Verifica si ya existe una política conflictiva para esa herramienta/rol.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+        def _check_conflict():
+            q = supabase.table("tool_policies")\
+                .select("id")\
+                .eq("tenant_id", tenant_id)\
+                .eq("tool_id", tool_id)\
+                .eq("is_active", True)
+            
+            if role:
+                q = q.eq("target_role", role)
+            else:
+                 q = q.is_("target_role", "null")
+            
+            return q.execute()
+
+        res = await loop.run_in_executor(None, _check_conflict)
+        return len(res.data) > 0
+    except:
+        return False
