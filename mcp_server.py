@@ -243,5 +243,63 @@ async def list_knowledge_royalties(user_id: str) -> str:
         return f"Error: {e}"
 
 
+@mcp.tool()
+async def get_budget_status(tenant_id: str) -> str:
+    """
+    Real-time budget check for autonomous agents.
+    Returns: "HEALTHY", "WARNING", or "CRITICAL" with percentage used.
+    """
+    try:
+        from app.routers.analytics import _get_date_range_receipts
+        from app.db import supabase
+        import asyncio
+        
+        loop = asyncio.get_running_loop()
+        
+        # 1. Get Limit
+        cc_res = await loop.run_in_executor(
+             None,
+             lambda: supabase.table("cost_centers").select("budget_limit").eq("tenant_id", tenant_id).execute()
+        )
+        limit = sum(c["budget_limit"] for c in cc_res.data) if cc_res.data else 1000.0
+        
+        # 2. Get Spend (Approx via receipts or cache)
+        receipts_res = await _get_date_range_receipts(tenant_id, days=30)
+        spend = sum(r.get("cost_real", 0) for r in (receipts_res.data or []))
+        
+        usage_pct = (spend / limit) * 100
+        
+        status = "HEALTHY"
+        if usage_pct > 90: status = "CRITICAL"
+        elif usage_pct > 70: status = "WARNING"
+            
+        return f"Status: {status} | Used: ${spend:.2f} / ${limit:.2f} ({usage_pct:.1f}%)"
+        
+    except Exception as e:
+        return f"Budget Check Failed: {e}"
+
+
+@mcp.tool()
+async def check_compliance(prompt: str, context: str = "") -> str:
+    """
+    Self-check against EU AI Act before executing a risky action.
+    Returns: "SAFE", "HIGH_RISK", or "PROHIBITED".
+    """
+    try:
+        from app.services.eu_ai_act_classifier import eu_ai_act_classifier, RiskLevel
+        
+        risk, category, conf = await eu_ai_act_classifier.classify(prompt, {"context": context})
+        
+        if risk == RiskLevel.PROHIBITED:
+            return f"PROHIBITED: Violation of Article 5 ({category}). DO NOT EXECUTE."
+        if risk == RiskLevel.HIGH_RISK:
+            return f"HIGH_RISK: Annex III ({category}). Requires Human Approval."
+            
+        return f"SAFE: {risk} ({category}). Proceed."
+        
+    except Exception as e:
+        return f"Compliance Check Error: {e}"
+
+
 if __name__ == "__main__":
     mcp.run()
