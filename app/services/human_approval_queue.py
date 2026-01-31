@@ -35,12 +35,9 @@ class HumanApprovalQueue:
         full_request: Dict,
         classification_confidence: float
     ) -> str:
-        """
-        Create a new approval request in the queue.
-        
-        Returns:
-            approval_id (UUID)
-        """
+        """Create a new approval request in the queue."""
+        import asyncio
+        loop = asyncio.get_running_loop()
         try:
             data = {
                 "tenant_id": tenant_id,
@@ -56,7 +53,10 @@ class HumanApprovalQueue:
                 "expires_at": (datetime.utcnow() + timedelta(hours=24)).isoformat()
             }
             
-            result = self.supabase.table("ai_act_approval_queue").insert(data).execute()
+            def _insert():
+                return self.supabase.table("ai_act_approval_queue").insert(data).execute()
+
+            result = await loop.run_in_executor(None, _insert)
             
             approval_id = result.data[0]["id"]
             
@@ -65,8 +65,8 @@ class HumanApprovalQueue:
                 f"(approval_id: {approval_id}, trace_id: {trace_id})"
             )
             
-            # Send notifications
-            await self._send_approval_notifications(approval_id, tenant_id, risk_category)
+            # Send notifications (non-blocking)
+            asyncio.create_task(self._send_approval_notifications(approval_id, tenant_id, risk_category))
             
             return approval_id
             
@@ -81,17 +81,22 @@ class HumanApprovalQueue:
         approval_note: Optional[str] = None
     ) -> bool:
         """Approve a pending request."""
+        import asyncio
+        loop = asyncio.get_running_loop()
         try:
-            result = self.supabase.table("ai_act_approval_queue")\
-                .update({
-                    "status": "APPROVED",
-                    "approver_id": approver_id,
-                    "approval_note": approval_note,
-                    "decided_at": datetime.utcnow().isoformat()
-                })\
-                .eq("id", approval_id)\
-                .eq("status", "PENDING")\
-                .execute()
+            def _update():
+                return self.supabase.table("ai_act_approval_queue")\
+                    .update({
+                        "status": "APPROVED",
+                        "approver_id": approver_id,
+                        "approval_note": approval_note,
+                        "decided_at": datetime.utcnow().isoformat()
+                    })\
+                    .eq("id", approval_id)\
+                    .eq("status", "PENDING")\
+                    .execute()
+
+            result = await loop.run_in_executor(None, _update)
             
             if result.data:
                 logger.info(f"✅ Approval granted: {approval_id} by approver {approver_id}")
@@ -111,17 +116,22 @@ class HumanApprovalQueue:
         rejection_reason: str
     ) -> bool:
         """Reject a pending request."""
+        import asyncio
+        loop = asyncio.get_running_loop()
         try:
-            result = self.supabase.table("ai_act_approval_queue")\
-                .update({
-                    "status": "REJECTED",
-                    "approver_id": approver_id,
-                    "rejection_reason": rejection_reason,
-                    "decided_at": datetime.utcnow().isoformat()
-                })\
-                .eq("id", approval_id)\
-                .eq("status", "PENDING")\
-                .execute()
+            def _update():
+                return self.supabase.table("ai_act_approval_queue")\
+                    .update({
+                        "status": "REJECTED",
+                        "approver_id": approver_id,
+                        "rejection_reason": rejection_reason,
+                        "decided_at": datetime.utcnow().isoformat()
+                    })\
+                    .eq("id", approval_id)\
+                    .eq("status", "PENDING")\
+                    .execute()
+
+            result = await loop.run_in_executor(None, _update)
             
             if result.data:
                 logger.info(f"❌ Approval rejected: {approval_id} by approver {approver_id}")
@@ -135,15 +145,19 @@ class HumanApprovalQueue:
     
     async def get_pending_approvals(self, tenant_id: str, limit: int = 50) -> list:
         """Get pending approvals for a tenant."""
+        import asyncio
+        loop = asyncio.get_running_loop()
         try:
-            result = self.supabase.table("ai_act_approval_queue")\
-                .select("*")\
-                .eq("tenant_id", tenant_id)\
-                .eq("status", "PENDING")\
-                .order("created_at", desc=True)\
-                .limit(limit)\
-                .execute()
-            
+            def _select():
+                return self.supabase.table("ai_act_approval_queue")\
+                    .select("*")\
+                    .eq("tenant_id", tenant_id)\
+                    .eq("status", "PENDING")\
+                    .order("created_at", desc=True)\
+                    .limit(limit)\
+                    .execute()
+
+            result = await loop.run_in_executor(None, _select)
             return result.data
             
         except Exception as e:
@@ -152,13 +166,17 @@ class HumanApprovalQueue:
     
     async def get_approval_status(self, approval_id: str) -> Optional[Dict]:
         """Check status of an approval request."""
+        import asyncio
+        loop = asyncio.get_running_loop()
         try:
-            result = self.supabase.table("ai_act_approval_queue")\
-                .select("*")\
-                .eq("id", approval_id)\
-                .single()\
-                .execute()
-            
+            def _select():
+                return self.supabase.table("ai_act_approval_queue")\
+                    .select("*")\
+                    .eq("id", approval_id)\
+                    .single()\
+                    .execute()
+
+            result = await loop.run_in_executor(None, _select)
             return result.data
             
         except Exception as e:
@@ -206,19 +224,22 @@ class HumanApprovalQueue:
         risk_category: RiskCategory
     ):
         """Send notifications to designated approvers."""
-        # TODO: Integrate with notification system (Email, Slack, Teams)
-        # For now, just log
+        import asyncio
+        loop = asyncio.get_running_loop()
+
         logger.info(
             f"📧 Notification sent for approval {approval_id} "
             f"(tenant: {tenant_id}, category: {risk_category})"
         )
         
-        # Mark notification as sent
+        # Mark notification as sent (using executor)
         try:
-            self.supabase.table("ai_act_approval_queue")\
-                .update({"notification_sent": True})\
-                .eq("id", approval_id)\
-                .execute()
+            def _update_notif():
+                self.supabase.table("ai_act_approval_queue")\
+                    .update({"notification_sent": True})\
+                    .eq("id", approval_id)\
+                    .execute()
+            await loop.run_in_executor(None, _update_notif)
         except:
             pass
 

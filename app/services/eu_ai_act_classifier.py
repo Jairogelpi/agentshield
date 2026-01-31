@@ -129,28 +129,23 @@ class EUAIActClassifier:
             ]
         }
     
-    def classify(self, prompt: str, context: Dict = None) -> Tuple[RiskLevel, RiskCategory, float]:
+    async def classify(self, prompt: str, context: Dict = None) -> Tuple[RiskLevel, RiskCategory, float]:
         """
-        Classify a request according to EU AI Act.
-        
-        Args:
-            prompt: User's prompt/request
-            context: Additional context (department, use_case, etc.)
-        
-        Returns:
-            (risk_level, risk_category, confidence)
+        Classify a request according to EU AI Act. Async Version.
         """
         context = context or {}
         
         # LAYER 1: Pattern-based detection (fast, high precision)
+        # Regex is fast enough to run in main thread usually, but for huge text maybe executor.
+        # Keeping it sync for simplicity as regex in python releases GIL often.
         risk_level, category, confidence = self._pattern_based_classification(prompt, context)
         
         if confidence >= 0.9:
             logger.info(f"✅ EU AI Act Classification: {risk_level} - {category} (confidence: {confidence})")
             return risk_level, category, confidence
         
-        # LAYER 2: LLM-based classification (slower, higher recall)
-        llm_risk, llm_category, llm_confidence = self._llm_based_classification(prompt, context)
+        # LAYER 2: LLM-based classification (Async)
+        llm_risk, llm_category, llm_confidence = await self._llm_based_classification(prompt, context)
         
         # Combine results (take most restrictive)
         final_risk = self._most_restrictive(risk_level, llm_risk)
@@ -160,33 +155,12 @@ class EUAIActClassifier:
         logger.info(f"🔍 EU AI Act Classification: {final_risk} - {final_category} (confidence: {final_confidence})")
         
         return final_risk, final_category, final_confidence
-    
-    def _pattern_based_classification(self, prompt: str, context: Dict) -> Tuple[RiskLevel, RiskCategory, float]:
-        """Fast pattern-based classification."""
-        # Check PROHIBITED first (Article 5)
-        for category, patterns in self.prohibited_patterns.items():
-            for pattern in patterns:
-                if re.search(pattern, prompt):
-                    return RiskLevel.PROHIBITED, category, 0.95
-        
-        # Check HIGH_RISK (Annex III)
-        for category, patterns in self.high_risk_patterns.items():
-            for pattern in patterns:
-                if re.search(pattern, prompt):
-                    return RiskLevel.HIGH_RISK, category, 0.90
-        
-        # Check LIMITED_RISK (Article 52)
-        for category, patterns in self.limited_risk_patterns.items():
-            for pattern in patterns:
-                if re.search(pattern, prompt):
-                    return RiskLevel.LIMITED_RISK, category, 0.85
-        
-        # Default: MINIMAL_RISK
-        return RiskLevel.MINIMAL_RISK, RiskCategory.GENERAL_PURPOSE, 0.50
-    
-    def _llm_based_classification(self, prompt: str, context: Dict) -> Tuple[RiskLevel, RiskCategory, float]:
-        """LLM-based classification for edge cases."""
+
+    async def _llm_based_classification(self, prompt: str, context: Dict) -> Tuple[RiskLevel, RiskCategory, float]:
+        """LLM-based classification using Async IO."""
         try:
+            from litellm import acompletion
+            
             system_prompt = """You are an EU AI Act compliance expert. Classify the AI system usage into risk levels:
 
 PROHIBITED (Article 5): Social scoring, real-time biometric surveillance, emotion recognition in workplace/education, manipulation
@@ -196,8 +170,8 @@ MINIMAL_RISK: General purpose tools
 
 Return JSON: {"risk_level": "...", "category": "...", "confidence": 0.95, "reasoning": "..."}"""
             
-            response = completion(
-                model="gpt-4",
+            response = await acompletion(
+                model="gpt-4o",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"Classify this request:\n\n{prompt}\n\nContext: {context}"}
