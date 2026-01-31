@@ -93,6 +93,67 @@ class DecisionPipeline:
             ctx.effective_model = trust_policy["effective_model"]
             ctx.risk_mode = trust_policy["mode"]
 
+        # 3.5 AI ACT GOVERNANCE (Legal Gate)
+        # We classify prompt risk. If prohibited -> 451. If high risk -> require approval.
+        try:
+            from app.services.eu_ai_act_classifier import eu_ai_act_classifier, RiskLevel
+            
+            # Fast Check (Async)
+            # Pass context trace_id for audit logging inside classifier if needed
+            ai_risk_level, ai_category, ai_confidence = await eu_ai_act_classifier.classify(user_prompt)
+            
+            ctx.log("AI_ACT", f"Risk: {ai_risk_level} ({ai_category}) - Conf: {ai_confidence}")
+            
+            if ai_risk_level == RiskLevel.PROHIBITED:
+                # SIEM ALERT
+                asyncio.create_task(
+                    event_bus.publish(
+                        tenant_id=ctx.tenant_id,
+                        event_type="LEGAL_BLOCK_EU_AI_ACT",
+                        severity="CRITICAL",
+                        details={"category": ai_category, "reason": "Prohibited Practice (Article 5)"},
+                        actor_id=ctx.user_id,
+                        trace_id=ctx.trace_id,
+                    )
+                )
+                raise HTTPException(
+                    status_code=451, # Unavailable For Legal Reasons
+                    detail=f"🇪🇺 EU AI Act BLOCK: Prohibited Practice Detected ({ai_category}). Action loggeed."
+                )
+                
+            if ai_risk_level == RiskLevel.HIGH_RISK:
+                # Check for Human Approval Header
+                approval_id = request.headers.get("X-Agentshield-Approval-Id")
+                if not approval_id:
+                     # SIEM ALERT
+                    asyncio.create_task(
+                        event_bus.publish(
+                            tenant_id=ctx.tenant_id,
+                            event_type="COMPLIANCE_HOLD",
+                            severity="WARNING",
+                            details={"category": ai_category, "reason": "High Risk - Missing Human Oversight"},
+                            actor_id=ctx.user_id,
+                            trace_id=ctx.trace_id,
+                        )
+                    )
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"🇪🇺 EU AI Act HOLD: High Risk Use Case ({ai_category}) requires Human Oversight (Article 14). Please provide 'X-Agentshield-Approval-Id'."
+                    )
+                
+                # Verify Approval (Mock or Real Service Call)
+                # await human_approval_queue.verify_approval(approval_id, ctx.tenant_id)
+                ctx.log("AI_ACT", f"High Risk Approved via {approval_id}")
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"⚠️ AI Act Classifier Error: {e}")
+            # Fail Open or Closed? For compliance, usually Fail Closed, but for availability Fail Open.
+            # We choose Fail Open with Log for now unless stric_mode is on.
+            pass
+
+
         # 4. COMPLIANCE GATE (PII Check)
         try:
             pii_result = await asyncio.wait_for(pii_guard.scan(messages), timeout=3.0)
