@@ -75,17 +75,18 @@ async def generate_policy_json(tenant_id: str, user_prompt: str) -> dict:
     # 2. Inyectar en el Prompt
     final_prompt = SYSTEM_PROMPT_TEMPLATE.format(tools_catalog=catalog_str)
 
-    # 3. Llamada al LLM (Usar modelo inteligente para lógica, GPT-4 o Claude 3.5 Sonnet)
-    # Nota: Usamos 'gpt-4o' como solicitado, o fallback a lo que esté configurado en env
+    # 3. Llamada al LLM Asíncrona (Non-blocking)
     try:
-        response = completion(
+        from litellm import acompletion
+        
+        response = await acompletion(
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": final_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=0.0,  # Cero creatividad, máxima precisión
-            response_format={"type": "json_object"},  # Forzar JSON válido
+            temperature=0.0,
+            response_format={"type": "json_object"},
         )
 
         content = response.choices[0].message.content
@@ -123,7 +124,8 @@ async def generate_custom_pii_rule(user_prompt: str) -> dict:
     """
 
     try:
-        response = completion(
+        from litellm import acompletion
+        response = await acompletion(
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_prompt},
