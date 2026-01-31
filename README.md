@@ -31,6 +31,12 @@ No solo bloqueamos, **probamos la decisión**:
 
 Esto cambia la conversación de "Confía en mí" a "**Aquí está la prueba matemática**".
 
+### 3. Simulation & Conflict Engine (Nuevo 2026)
+Antes de activar una regla, el sistema **viaja al pasado**:
+> "Simulación: Si hubieras activado esta regla ayer, habrías bloqueado 15 peticiones legítimas de Marketing."
+
+Además, el **Detector de Conflictos** impide paradojas lógicas (e.g., Permitir y Bloquear la misma herramienta), devolviendo un error HTTP 409 antes de que rompas producción.
+
 ---
 
 ## 🏛️ Arquitectura: Tres Caras, Un Cerebro
