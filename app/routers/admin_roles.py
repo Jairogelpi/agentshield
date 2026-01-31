@@ -166,12 +166,28 @@ async def delete_role(
             .execute()
     )
     
+    # ... (fetched role_def) ...
     if not role_def.data:
          raise HTTPException(status_code=404, detail="Role not found")
          
-    # Check Usage (Mock active user check for now, can perform count query)
-    # active_users = supabase.table("profiles").select("id", count="exact").match({...}).execute()
-    # if active_users.count > 0: raise Conflict
+    role_name = role_def.data.get("function")
+
+    # 2. Check for active users (REAL CHECK)
+    # We assume 'profiles' table uses the role function name as the role identifier
+    active_users = await loop.run_in_executor(
+        None,
+        lambda: supabase.table("profiles")
+            .select("id", count="exact")
+            .eq("tenant_id", identity.tenant_id)
+            .eq("role", role_name) 
+            .execute()
+    )
+
+    if active_users.count and active_users.count > 0:
+         raise HTTPException(
+             status_code=409, 
+             detail=f"Cannot delete role '{role_name}': {active_users.count} active users assigned. Please reassign them first."
+         )
 
     # 3. Delete
     await loop.run_in_executor(
@@ -187,7 +203,7 @@ async def delete_role(
         str(identity.tenant_id), 
         identity.user_id, 
         "ROLE_DELETE", 
-        {"role_id": role_id}
+        {"role_id": role_id, "role_name": role_name}
     )
 
     return {"status": "deleted"}
@@ -199,26 +215,48 @@ async def simulate_access(
 ):
     """
     Digital Twin Simulation: 'What if this role tries X?'
+    Uses real Policy Engine logic if possible or strict schema validation.
     """
-    # Simply logic for demo:
-    # If role has 'block' in pii_policy and action is 'pii.bypass', return False.
+    role_def = payload.role_definition
+    if not role_def and payload.role_id:
+        # Fetch real role
+        loop = asyncio.get_running_loop()
+        res = await loop.run_in_executor(
+            None, 
+            lambda: supabase.table("role_definitions").select("*").eq("id", payload.role_id).single().execute()
+        )
+        if res.data:
+            role_def = res.data
+
+    if not role_def:
+        raise HTTPException(404, "Role definition not found for simulation")
+
+    # Real Logic Evaluation
+    pii_policy = role_def.get("pii_policy", "REDACT")
+    allowed_modes = role_def.get("allowed_modes", [])
+    system_persona = role_def.get("system_persona", "")
     
     allowed = True
-    reason = "Standard access granted."
-    summary = "Role is standard."
-
-    if payload.role_definition:
-        # Simulate with provided ephemeral definition
-        pol = payload.role_definition.get("pii_policy", "REDACT")
-        summary = payload.role_definition.get("system_persona", "")[:50] + "..."
-        if "BLOCK" in pol and "pii" in payload.action_to_test:
+    reason = "Access granted by default policies."
+    
+    # 1. Check PII Policy
+    if "pii" in payload.action_to_test.lower():
+        if pii_policy == "BLOCK":
             allowed = False
-            reason = "Role PII Policy is set to BLOCK."
-            
+            reason = "Role PII Policy is STRICT BLOCK."
+        elif pii_policy == "REDACT":
+             reason = "Access allowed but PII will be redacted."
+
+    # 2. Check Allowed Modes (if action implies a mode)
+    # E.g. action "execute_code" implies "planning" or "coding" mode
+    if "code" in payload.action_to_test.lower() and "coding" not in allowed_modes:
+         allowed = False
+         reason = f"Role does not have 'coding' mode enabled. Modes: {allowed_modes}"
+
     return {
         "allowed": allowed,
         "reason": reason,
-        "simulated_persona_summary": summary
+        "simulated_persona_summary": f"{role_def.get('function')} - {system_persona[:60]}..."
     }
 
 # --- Legacy Aliases ---

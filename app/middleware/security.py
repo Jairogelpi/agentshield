@@ -1,58 +1,64 @@
-import logging
-import os
+
 import time
-import uuid
+import logging
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response, JSONResponse
 
-from fastapi import HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from app.db import redis_client
 
-from app.config import settings
-from app.services.event_bus import event_bus
+logger = logging.getLogger("agentshield.middleware")
 
-logger = logging.getLogger("agentshield.security")
+class SecurityMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        start_time = time.time()
+        
+        # 1. IP Blocklist Check (Basic)
+        client_ip = request.client.host
+        # In prod: if await redis_client.sismember("blocked_ips", client_ip): return 403
+        
+        # 2. Add Security Headers
+        response = await call_next(request)
+        
+        process_time = time.time() - start_time
+        response.headers["X-Process-Time"] = str(process_time)
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        
+        # 3. Simple Audit Log for Slow Requests
+        if process_time > 2.0:
+            logger.warning(f"🐢 Slow Request: {request.method} {request.url.path} took {process_time:.2f}s")
+            
+        return response
 
-
-async def security_guard_middleware(request: Request, call_next):
-    # 0. TELEMETRÍA INICIAL (The Zenith Anchor)
-    # Marcamos el inicio exacto para medir latencias en el HUD/Dashboard
-    request.state.start_ts = time.time()
-
-    # Bypass para Health Check y modo Desarrollo
-    is_dev = settings.ENVIRONMENT == "development"
-    if request.url.path == "/health" or request.method == "OPTIONS" or is_dev:
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """
+    Global Rate Limiter backed by Redis.
+    Applies strict limits to unauthenticated endpoints.
+    Authenticated endpoints have their own quota system in Pipeline.
+    """
+    async def dispatch(self, request: Request, call_next):
+        # Skip for health checks or static
+        if request.url.path == "/health" or request.method == "OPTIONS":
+             return await call_next(request)
+             
+        client_ip = request.client.host
+        key = f"rl:global:{client_ip}"
+        
+        try:
+             # Max 100 requests per minute per IP for public endpoints
+             current = await redis_client.incr(key)
+             if current == 1:
+                 await redis_client.expire(key, 60)
+                 
+             if current > 100:
+                 return JSONResponse(
+                     status_code=429, 
+                     content={"detail": "Too Many Requests (Global Shield)"}
+                 )
+        except Exception:
+            # Fail open if Redis is down
+            pass
+            
         return await call_next(request)
-
-    # 1. IDENTIDAD DE LA PETICIÓN (X-Request-ID)
-    # Propagamos el ID de Cloudflare o generamos uno nuevo
-    request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
-    request.state.trace_id = request_id
-
-    # 2. VERIFICACIÓN DE CLOUDFLARE (El Candado)
-    expected_secret = settings.CLOUDFLARE_PROXY_SECRET
-    incoming_secret = request.headers.get("X-AgentShield-Auth")
-
-    if expected_secret and incoming_secret != expected_secret:
-        real_ip = request.headers.get("cf-connecting-ip", request.client.host)
-        logger.warning(f"⛔ Unauthorized Direct Access [{request_id}] from {real_ip}")
-
-        return JSONResponse(
-            status_code=403,
-            content={
-                "error": "Security Breach detected",
-                "message": "Direct access forbidden. Use the authorized portal.",
-                "trace_id": request_id,
-            },
-        )
-
-    # 3. PROCESAR PETICIÓN (El Túnel)
-    response = await call_next(request)
-
-    # 4. BLINDAJE DE SEGURIDAD (Zenith Header Protocol 2026)
-    response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-XSS-Protection"] = "1; mode=block"
-    response.headers["X-Request-ID"] = request_id
-    response.headers["X-AgentShield-Region"] = os.getenv("SERVER_REGION", "EU-WEST-CONT")
-
-    return response

@@ -64,6 +64,11 @@ async def get_user_trust_profile(email: str, tenant_id: str) -> dict:
         return {"error": f"Resolution failed: {str(e)}"}
 
 
+from app.services.identity import VerifiedIdentity
+from app.services.vault import vault
+
+# ...
+
 @mcp.tool()
 async def search_knowledge_vault(query: str, tenant_id: str) -> str:
     """
@@ -71,11 +76,36 @@ async def search_knowledge_vault(query: str, tenant_id: str) -> str:
     Devuelve fragmentos relevantes redactados.
     """
     try:
-        # Mocking the RAG call for MCP demo compliance, but using Async structure
-        # In real prod, this calls 'app.services.rag.search(query, tenant_id)'
+        # Construct a synthetic identity for the vault service
+        # In a real scenario, MCP should pass the user_id too.
+        # We assume a mechanism to infer user or use a 'system' user for this context if needed.
+        # But `vault.search` uses identity.tenant_id and identity.dept_id.
+        # We will default dept_id to None (search all allowed) or fetch from tenant context if possible.
         
-        await asyncio.sleep(0.1) # Simulate Latency
-        return f"[SECURE RESULT] Found 2 documents for '{query}' in tenant {tenant_id}. Content redacted."
+        # Helper identity wrapper
+        class SyntheticIdentity(VerifiedIdentity):
+            pass
+            
+        # We create a restricted identity
+        simulated_id = SyntheticIdentity(
+            user_id="mcp-agent",
+            email="agent@system.local",
+            tenant_id=tenant_id,
+            role="member",
+            dept_id=None # Search global tenant docs or public/internal
+        )
+        
+        results = await vault.search(simulated_id, query, k=3)
+        
+        if not results:
+             return "No relevant documents found in the vault."
+             
+        formatted = f"found {len(results)} secure documents:\n"
+        for i, doc in enumerate(results):
+             formatted += f"{i+1}. {doc.get('filename')} (Score: {doc.get('similarity', 0):.2f}):\n"
+             formatted += f"   \"{doc.get('content_snippet', '...')}\"\n"
+             
+        return formatted
         
     except Exception as e:
         return f"Vault error: {e}"
